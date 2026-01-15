@@ -17,7 +17,7 @@ permissions:
 jobs:
   release-macos-aarch64:
     runs-on: macos-14
-    timeout-minutes: 240
+    timeout-minutes: 360
 
     steps:
       - name: Checkout
@@ -115,7 +115,7 @@ jobs:
             --key "$NOTARY_KEY" \
             --key-id "$APPLE_NOTARY_API_KEY_ID" \
             --issuer "$APPLE_NOTARY_API_ISSUER_ID" \
-            --wait --timeout 3h
+            --wait --timeout 5h
 
       - name: Staple notarization ticket
         run: |
