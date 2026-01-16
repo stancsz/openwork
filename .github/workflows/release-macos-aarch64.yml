@@ -91,6 +91,9 @@ jobs:
           CI: true
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
+          # Tauri updater signing
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+
           # macOS signing (maps from existing repo secrets)
           APPLE_SIGNING_IDENTITY: ${{ secrets.APPLE_SIGNING_IDENTITY }}
           APPLE_CERTIFICATE: ${{ secrets.APPLE_CODESIGN_CERT_P12_BASE64 }}
@@ -110,3 +113,16 @@ jobs:
           tauriScript: pnpm exec tauri -vvv
           args: ${{ matrix.args }}
           retryAttempts: 3
+
+      - name: Upload updater artifacts
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+
+          UPDATER_DIR="$GITHUB_WORKSPACE/src-tauri/target/${{ matrix.target }}/release/bundle/macos"
+
+          UPDATE_ARCHIVE="$(ls -1 "$UPDATER_DIR/"*.app.tar.gz | head -n 1)"
+          UPDATE_SIG_PATH="$(ls -1 "$UPDATER_DIR/"*.app.tar.gz.sig | head -n 1)"
+
+          gh release upload "$RELEASE_TAG" "$UPDATE_ARCHIVE" "$UPDATE_SIG_PATH" --clobber
