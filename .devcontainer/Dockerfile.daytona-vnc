@@ -14,7 +14,7 @@ WORKDIR /workspace
 RUN git clone --depth 1 --branch dev https://github.com/different-ai/openwork.git . \
   && /usr/local/share/nvm/current/bin/pnpm install --frozen-lockfile || /usr/local/share/nvm/current/bin/pnpm install
 
-COPY .devcontainer/start-daytona-vnc.sh /workspace/.devcontainer/start-daytona-vnc.sh
+COPY start-daytona-vnc.sh /workspace/.devcontainer/start-daytona-vnc.sh
 
 RUN chmod +x /workspace/.devcontainer/start-daytona-vnc.sh \
   && chown -R daytona:daytona /workspace
