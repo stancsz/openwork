@@ -34,6 +34,8 @@ sleep 3
 echo "==> Starting Electron app..."
 export DISPLAY=:99
 export ELECTRON_DISABLE_SANDBOX=1
+export ELECTRON_EXTRA_LAUNCH_ARGS="--disable-gpu"
+export OPENWORK_REACT_DEVTOOLS=0
 export OPENWORK_ELECTRON_REMOTE_DEBUG_PORT=9825
 export OPENWORK_DEV_MODE=1
 nohup pnpm --filter @openwork/desktop dev:electron > /tmp/electron.log 2>&1 &

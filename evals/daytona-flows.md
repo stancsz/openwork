@@ -12,24 +12,33 @@ Daytona proxy.
 ```bash
 daytona create \
   --name openwork-test \
-  --dockerfile .devcontainer/Dockerfile \
-  --context .devcontainer/Dockerfile \
-  --context .devcontainer/start-display.sh \
-  --context .devcontainer/start-services.sh \
+  --dockerfile .devcontainer/Dockerfile.daytona-vnc \
+  --context .devcontainer/Dockerfile.daytona-vnc \
+  --context .devcontainer/start-daytona-vnc.sh \
   --class large \
   --memory 8 \
+  --disk 10 \
   --auto-stop 60 \
   --public \
   --target us
 ```
 
+Use the Daytona VNC-capable base image (`daytonaio/sandbox`) rather than the
+generic devcontainer image. It includes XFCE, Xvfb, x11vnc, noVNC, websockify,
+and dbus-x11. `--disk 10` is required because the default 3 GB disk can fill up
+during dependency and sidecar work.
+
 ### 2. Start services
 
 ```bash
-daytona exec openwork-test 'bash /workspace/.devcontainer/start-services.sh'
+daytona exec openwork-test 'bash -lc "cd /workspace && nohup bash .devcontainer/start-daytona-vnc.sh > /tmp/start-vnc.log 2>&1 &"'
+
+daytona exec openwork-test 'bash -lc "cd /workspace/apps/app && nohup env OPENWORK_DEV_MODE=1 pnpm exec vite --host 0.0.0.0 --port 5173 > /tmp/vite.log 2>&1 &"'
+
+daytona exec openwork-test 'bash -lc "cd /workspace && nohup env DISPLAY=:99 ELECTRON_DISABLE_SANDBOX=1 OPENWORK_REACT_DEVTOOLS=0 OPENWORK_DEV_MODE=1 OPENWORK_ELECTRON_REMOTE_DEBUG_PORT=9825 pnpm --filter @openwork/desktop dev:electron > /tmp/electron.log 2>&1 &"'
 ```
 
-Wait ~30s for Xvfb + Vite + Electron + opencode sidecar to boot.
+Wait ~35-60s for XFCE/noVNC + Vite + Electron + opencode sidecar to boot.
 
 ### 3. Get the CDP proxy URL
 
@@ -200,10 +209,17 @@ The reducer uses `{ key, value }` actions. If you dispatched a full state object
 Use `document.execCommand('insertText', false, text)` after focusing. Direct `textContent` assignment doesn't trigger Lexical's internal state update.
 
 **opencode sidecar not starting:**
-Check memory. Electron + opencode + Vite needs ~6GB. Use `--memory 8`.
+Check memory and disk. Electron + opencode + Vite needs ~6GB. Use `--memory 8`.
+Dependencies/sidecars need more than the default 3GB disk; use `--disk 10`.
 
 **CDP timeouts:**
 The renderer might be frozen (e.g., a blocking IPC call). Restart Electron:
 ```bash
-daytona exec openwork-test 'pkill -f electron; sleep 3; DISPLAY=:99 ELECTRON_DISABLE_SANDBOX=1 OPENWORK_ELECTRON_REMOTE_DEBUG_PORT=9825 OPENWORK_DEV_MODE=1 ELECTRON_EXTRA_LAUNCH_ARGS="--disable-gpu" nohup pnpm --filter @openwork/desktop dev:electron > /tmp/electron.log 2>&1 &'
+daytona exec openwork-test 'bash -lc "pkill -f electron || true; pkill -f electron-dev || true"'
+sleep 3
+daytona exec openwork-test 'bash -lc "cd /workspace && nohup env DISPLAY=:99 ELECTRON_DISABLE_SANDBOX=1 OPENWORK_REACT_DEVTOOLS=0 OPENWORK_ELECTRON_REMOTE_DEBUG_PORT=9825 OPENWORK_DEV_MODE=1 pnpm --filter @openwork/desktop dev:electron > /tmp/electron.log 2>&1 &"'
 ```
+
+`[openwork] Electron CDP exposed...` only means OpenWork requested CDP. The real
+success marker is Chromium's own `DevTools listening on ws://127.0.0.1:9825/...`
+line in `/tmp/electron.log`.

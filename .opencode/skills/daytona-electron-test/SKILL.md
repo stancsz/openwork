@@ -5,9 +5,9 @@ description: "Test the real Electron app on Daytona: create sandbox, start servi
 
 # Skill: Daytona Electron Test
 
-Drive the real OpenWork Electron app inside an 8 GB Daytona sandbox via CDP
-browser tools. Covers workspace creation, session interaction, settings
-verification, and bug reproduction.
+Drive the real OpenWork Electron app inside a Daytona sandbox via CDP browser
+tools. Covers workspace creation, session interaction, settings verification,
+and bug reproduction.
 
 ## When to use
 
@@ -17,8 +17,9 @@ verification, and bug reproduction.
 
 ## Fastest path: the script
 
-Run the helper script from the repo root. It creates the sandbox, checks out
-the ref, starts all services, and waits for CDP:
+Run the helper script from the repo root. It creates a Daytona VNC-capable
+sandbox, checks out the ref, starts XFCE/noVNC, Vite, Electron, and waits for
+CDP:
 
 ```bash
 bash .devcontainer/test-on-daytona.sh [branch-or-commit]
@@ -35,12 +36,12 @@ SANDBOX="openwork-test-$(date +%Y%m%d-%H%M%S)"
 
 daytona create \
   --name "$SANDBOX" \
-  --dockerfile .devcontainer/Dockerfile \
-  --context .devcontainer/Dockerfile \
-  --context .devcontainer/start-display.sh \
-  --context .devcontainer/start-services.sh \
+  --dockerfile .devcontainer/Dockerfile.daytona-vnc \
+  --context .devcontainer/Dockerfile.daytona-vnc \
+  --context .devcontainer/start-daytona-vnc.sh \
   --class large \
   --memory 8 \
+  --disk 10 \
   --auto-stop 60 \
   --public \
   --target us
@@ -48,6 +49,15 @@ daytona create \
 
 **CRITICAL:** Always `--memory 8`. The default 1 GB will OOM-kill pnpm install
 and Vite's esbuild. Electron + Vite + opencode needs ~6 GB.
+
+**CRITICAL:** Always `--disk 10` with the Daytona VNC image. The default 3 GB
+can fill up during dependency/sidecar work.
+
+**WHY THIS IMAGE:** Use `.devcontainer/Dockerfile.daytona-vnc`, which is based
+on `daytonaio/sandbox:0.6.0`. It includes Daytona's expected desktop stack:
+Xvfb, XFCE, x11vnc, noVNC, websockify, and dbus-x11. Do not use the generic
+`node:20-bookworm + fluxbox` path for Electron/noVNC tests unless debugging the
+old setup.
 
 ### 2. Checkout the branch under test
 
@@ -60,14 +70,18 @@ daytona exec "$SANDBOX" -- "bash -lc 'cd /workspace && git fetch origin <ref> &&
 ### 3. Start services (background, don't block)
 
 ```bash
-daytona exec "$SANDBOX" -- "bash -lc 'cd /workspace && nohup bash .devcontainer/start-services.sh > /tmp/start-services.log 2>&1 &'"
+daytona exec "$SANDBOX" -- "bash -lc 'cd /workspace && nohup bash .devcontainer/start-daytona-vnc.sh > /tmp/start-vnc.log 2>&1 &'"
+
+daytona exec "$SANDBOX" -- "bash -lc 'cd /workspace/apps/app && nohup env OPENWORK_DEV_MODE=1 pnpm exec vite --host 0.0.0.0 --port 5173 > /tmp/vite.log 2>&1 &'"
+
+daytona exec "$SANDBOX" -- "bash -lc 'cd /workspace && nohup env DISPLAY=:99 ELECTRON_DISABLE_SANDBOX=1 OPENWORK_REACT_DEVTOOLS=0 OPENWORK_DEV_MODE=1 OPENWORK_ELECTRON_REMOTE_DEBUG_PORT=9825 pnpm --filter @openwork/desktop dev:electron > /tmp/electron.log 2>&1 &'"
 ```
 
-**IMPORTANT:** Run `start-services.sh` via `nohup ... &`. The script ends with
-`wait` which blocks forever. If you run it in the foreground, `daytona exec`
-hangs until the sandbox auto-stops.
+**IMPORTANT:** Keep these as separate `daytona exec` calls. `start-daytona-vnc.sh`
+starts long-lived desktop services, Vite is a long-lived dev server, and Electron
+is long-lived. Running them in the foreground blocks `daytona exec`.
 
-Wait ~35-45s for Xvfb + Vite + Electron + opencode sidecar to boot.
+Wait ~35-60s for XFCE + Vite + Electron + opencode sidecar to boot.
 
 ### 4. Get URLs
 
@@ -253,17 +267,17 @@ Edit the workspace opencode config:
 daytona exec "$SANDBOX" -- "bash -lc 'cd /workspace/hello && node -e \"...update opencode.jsonc...\"'"
 ```
 
-Then **kill and restart ALL services** (not just opencode):
+Then restart Electron so opencode picks up the new config:
 ```bash
-# Step 1: kill everything
-daytona exec "$SANDBOX" -- "bash -lc 'pkill -f electron || true; pkill -f opencode || true; pkill -f vite || true'"
+# Step 1: kill Electron/runtime children
+daytona exec "$SANDBOX" -- "bash -lc 'pkill -f electron || true; pkill -f electron-dev || true; pkill -f opencode || true'"
 
-# Step 2: wait, then restart (SEPARATE exec call - pkill kills the shell too)
+# Step 2: wait, then restart Electron (separate exec call)
 sleep 3
-daytona exec "$SANDBOX" -- "bash -lc 'cd /workspace && nohup bash .devcontainer/start-services.sh > /tmp/start-services.log 2>&1 &'"
+daytona exec "$SANDBOX" -- "bash -lc 'cd /workspace && nohup env DISPLAY=:99 ELECTRON_DISABLE_SANDBOX=1 OPENWORK_REACT_DEVTOOLS=0 OPENWORK_ELECTRON_REMOTE_DEBUG_PORT=9825 OPENWORK_DEV_MODE=1 pnpm --filter @openwork/desktop dev:electron > /tmp/electron.log 2>&1 &'"
 ```
 
-**GOTCHA:** Do NOT chain `pkill` and `nohup start-services.sh` in the same
+**GOTCHA:** Do NOT chain `pkill` and the restart in the same
 `daytona exec` call. `pkill -f electron` sends SIGTERM to the exec session
 itself (because the command string matches). The restart never runs.
 Always use two separate `daytona exec` calls with a `sleep` between them.
@@ -287,6 +301,16 @@ You used `--memory 1` (default). Always `--memory 8`.
 The devcontainer sets `ELECTRON_DISABLE_SANDBOX=1`. If running Electron
 manually, pass `--no-sandbox` or set the env var.
 
+**Generic DBus errors in Electron logs:**
+DBus warnings are expected in Daytona/Linux containers. They are not fatal if
+you also see `DevTools listening on ws://127.0.0.1:9825/...` and an OpenWork
+window in noVNC.
+
+**GPU process errors in Electron logs:**
+`Exiting GPU process due to errors during initialization` is common under Xvfb.
+It is not fatal if Chromium falls back and the window appears. If CDP never
+prints `DevTools listening`, check `/tmp/electron.log` and restart Electron.
+
 **"bun: not found" during dev:electron:**
 The sidecar prep script uses bun. The devcontainer Dockerfile installs it
 globally. If you built a custom Dockerfile, add `RUN npm install -g bun`.
@@ -294,16 +318,20 @@ globally. If you built a custom Dockerfile, add `RUN npm install -g bun`.
 **"xauth command not found":**
 `apt-get install -y xauth` (already in the devcontainer Dockerfile).
 
-**CDP shows no targets after 45s:**
+**CDP shows no targets after 60s:**
 Check `/tmp/electron.log` and `/tmp/vite.log`:
 ```bash
 daytona exec "$SANDBOX" -- "bash -lc 'tail -80 /tmp/electron.log'"
 daytona exec "$SANDBOX" -- "bash -lc 'tail -80 /tmp/vite.log'"
 ```
 
+The app log line `[openwork] Electron CDP exposed at http://127.0.0.1:9825`
+means OpenWork requested CDP. The real success marker is Chromium's own line:
+`DevTools listening on ws://127.0.0.1:9825/devtools/browser/...`.
+
 **opencode sidecar not restarting after kill:**
 The Electron runtime manager does NOT auto-detect sidecar death. You must
-restart the entire Electron process (kill + restart via start-services.sh).
+restart the entire Electron process.
 
 **`daytona exec` with `pkill` kills the exec session:**
 The process pattern match hits the exec wrapper. Always split kill and
@@ -312,6 +340,18 @@ restart into separate `daytona exec` calls.
 **Blank Electron window (empty `<div id="root"></div>`):**
 Vite crashed (check `/tmp/vite.log`). Usually memory pressure. Verify
 `free -m` shows >2 GB available.
+
+**noVNC URL says sandbox not found:**
+Preview URLs are not stable. Regenerate the URL:
+```bash
+daytona preview-url "$SANDBOX" -p 6080
+```
+
+**Electron starts twice or CDP says address already in use:**
+Kill the old Electron process before restarting:
+```bash
+daytona exec "$SANDBOX" -- "bash -lc 'pkill -f electron || true; pkill -f electron-dev || true'"
+```
 
 ## Teardown
 

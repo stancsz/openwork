@@ -237,6 +237,22 @@ if (Number.isFinite(remoteDebugPort) && remoteDebugPort > 0) {
   app.commandLine.appendSwitch("remote-debugging-port", String(remoteDebugPort));
   app.commandLine.appendSwitch("remote-debugging-address", "127.0.0.1");
 }
+
+// Apply extra Chromium flags from ELECTRON_EXTRA_LAUNCH_ARGS.
+// Used in headless/Daytona environments to pass e.g. --disable-gpu.
+const extraLaunchArgs = (process.env.ELECTRON_EXTRA_LAUNCH_ARGS ?? "").trim();
+if (extraLaunchArgs) {
+  for (const arg of extraLaunchArgs.split(/\s+/)) {
+    const cleaned = arg.replace(/^--/, "");
+    if (!cleaned) continue;
+    const eqIdx = cleaned.indexOf("=");
+    if (eqIdx > 0) {
+      app.commandLine.appendSwitch(cleaned.slice(0, eqIdx), cleaned.slice(eqIdx + 1));
+    } else {
+      app.commandLine.appendSwitch(cleaned);
+    }
+  }
+}
 const DEFAULT_DEN_BASE_URL = "https://app.openworklabs.com";
 const DEFAULT_LOCAL_BASE_URL = "http://127.0.0.1:4096";
 const FORCE_DESKTOP_REQUIRE_SIGNIN = envFlagEnabled("OPENWORK_FORCE_SIGNIN");
@@ -246,34 +262,6 @@ let applicationMenuVisible = process.platform === "darwin";
 function envFlagEnabled(name) {
   const value = process.env[name]?.trim().toLowerCase();
   return value === "1" || value === "true" || value === "yes" || value === "on";
-}
-
-function envFlagDisabled(name) {
-  const value = process.env[name]?.trim().toLowerCase();
-  return value === "0" || value === "false" || value === "off";
-}
-
-async function installReactDevToolsForDev() {
-  if (app.isPackaged || envFlagDisabled("OPENWORK_REACT_DEVTOOLS")) return;
-  try {
-    const mod = await import("electron-devtools-installer");
-    const installExtension =
-      typeof mod.installExtension === "function"
-        ? mod.installExtension
-        : typeof mod.default === "function"
-          ? mod.default
-          : typeof mod.default?.installExtension === "function"
-            ? mod.default.installExtension
-            : null;
-    const reactDevtools = mod.REACT_DEVELOPER_TOOLS ?? mod.default?.REACT_DEVELOPER_TOOLS;
-    if (typeof installExtension !== "function" || !reactDevtools) {
-      throw new Error("electron-devtools-installer did not expose React DevTools");
-    }
-    const name = await installExtension(reactDevtools);
-    console.info(`[devtools] installed ${name}`);
-  } catch (error) {
-    console.warn("[devtools] failed to install React Developer Tools", error);
-  }
 }
 
 const EMPTY_WORKSPACE_LIST = Object.freeze({
@@ -2918,7 +2906,6 @@ if (!app.requestSingleInstanceLock()) {
 
   app.whenReady().then(async () => {
     installApplicationMenu();
-    await installReactDevToolsForDev();
     await runtimeManager.prepareFreshRuntime().catch(() => undefined);
 
     // Use Tauri's existing workspace state file as canonical so rollback and

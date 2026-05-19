@@ -10,10 +10,9 @@ set -euo pipefail
 #   OPENAI_API_KEY  — if set, injects the key into the workspace opencode
 #                     config so real LLM sessions work (GPT-4o, GPT-5.5, etc.)
 #
-# Creates an 8 GB Daytona sandbox, checks out the given ref (default: current
-# HEAD), starts all services (Xvfb + Vite + Electron + opencode sidecar), and
-# waits for the Electron CDP endpoint. Prints the CDP and noVNC URLs at the
-# end so you can connect browser tools or open the app in your browser.
+# Creates a Daytona sandbox from the VNC-capable Daytona image, checks out the
+# given ref (default: current HEAD), starts XFCE/noVNC + Vite + Electron, and
+# waits for the Electron CDP endpoint. Prints the CDP and noVNC URLs at the end.
 #
 # Cleanup:
 #   daytona delete "$SANDBOX"
@@ -30,12 +29,12 @@ echo ""
 
 daytona create \
   --name "$SANDBOX" \
-  --dockerfile .devcontainer/Dockerfile \
-  --context .devcontainer/Dockerfile \
-  --context .devcontainer/start-display.sh \
-  --context .devcontainer/start-services.sh \
+  --dockerfile .devcontainer/Dockerfile.daytona-vnc \
+  --context .devcontainer/Dockerfile.daytona-vnc \
+  --context .devcontainer/start-daytona-vnc.sh \
   --class large \
   --memory 8 \
+  --disk 10 \
   --auto-stop 60 \
   --public \
   --target us
@@ -45,8 +44,14 @@ echo "==> Checking out $REF and installing deps..."
 daytona exec "$SANDBOX" -- "bash -lc 'cd /workspace && git fetch origin $REF && git checkout $REF && pnpm install --frozen-lockfile || pnpm install'"
 
 echo ""
-echo "==> Starting services (Xvfb + Vite + Electron)..."
-daytona exec "$SANDBOX" -- "bash -lc 'cd /workspace && nohup bash .devcontainer/start-services.sh > /tmp/start-services.log 2>&1 &'"
+echo "==> Starting XFCE/noVNC..."
+daytona exec "$SANDBOX" -- "bash -lc 'cd /workspace && nohup bash .devcontainer/start-daytona-vnc.sh > /tmp/start-vnc.log 2>&1 &'"
+
+echo "==> Starting Vite..."
+daytona exec "$SANDBOX" -- "bash -lc 'cd /workspace/apps/app && nohup env OPENWORK_DEV_MODE=1 pnpm exec vite --host 0.0.0.0 --port 5173 > /tmp/vite.log 2>&1 &'"
+
+echo "==> Starting Electron..."
+daytona exec "$SANDBOX" -- "bash -lc 'cd /workspace && nohup env DISPLAY=:99 ELECTRON_DISABLE_SANDBOX=1 OPENWORK_REACT_DEVTOOLS=0 OPENWORK_DEV_MODE=1 OPENWORK_ELECTRON_REMOTE_DEBUG_PORT=$CDP_PORT pnpm --filter @openwork/desktop dev:electron > /tmp/electron.log 2>&1 &'"
 
 echo ""
 echo "==> Waiting for Electron CDP on port $CDP_PORT (up to ${MAX_WAIT}s)..."
@@ -65,7 +70,7 @@ if [ "$elapsed" -ge "$MAX_WAIT" ]; then
   echo ""
   echo "WARNING: CDP did not become ready within ${MAX_WAIT}s."
   echo "Check logs:"
-  echo "  daytona exec $SANDBOX -- 'tail -80 /tmp/start-services.log'"
+  echo "  daytona exec $SANDBOX -- 'tail -80 /tmp/start-vnc.log'"
   echo "  daytona exec $SANDBOX -- 'tail -80 /tmp/electron.log'"
   echo "  daytona exec $SANDBOX -- 'tail -80 /tmp/vite.log'"
 fi

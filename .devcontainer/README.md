@@ -13,22 +13,30 @@ Full-stack dev environment that runs the **real Electron app** + Den stack in a 
 | **Vite HMR** | 5173 | Hot module replacement for the React UI |
 | **MySQL** | 3306 | Database (internal) |
 
-## Quick start with Daytona
+## Quick start with Daytona Electron/noVNC
 
 ```bash
-daytona create https://github.com/different-ai/openwork
+bash .devcontainer/test-on-daytona.sh [branch-or-commit]
 ```
 
-Then open port 6080 in your browser — you'll see the actual OpenWork desktop app.
+The script creates a large Daytona sandbox from `.devcontainer/Dockerfile.daytona-vnc`
+with `--memory 8 --disk 10`, starts XFCE/noVNC, Vite, and Electron, then prints
+the noVNC and CDP URLs.
+
+Do not use the generic `daytona create https://github.com/different-ai/openwork`
+flow for Electron/noVNC tests. The default resource size is too small and the
+generic image path does not guarantee the desktop stack we need.
 
 ## How it works
 
-1. **Xvfb** creates a virtual X display (`:99`) inside the container
-2. **Electron** renders the app on this virtual display
-3. **x11vnc** captures the display and serves it as VNC
-4. **noVNC** (port 6080) wraps VNC in a web client you can open in any browser
-5. You can click, type, and interact with the full Electron app through noVNC
-6. **CDP on port 9825** enables Chrome MCP and Playwright automation
+1. `.devcontainer/Dockerfile.daytona-vnc` starts from `daytonaio/sandbox:0.6.0`,
+   which includes Daytona's expected desktop packages: Xvfb, XFCE, x11vnc,
+   noVNC, websockify, and dbus-x11.
+2. `.devcontainer/start-daytona-vnc.sh` starts Xvfb, XFCE, x11vnc, and noVNC on
+   display `:99`.
+3. Vite serves the React UI on port 5173.
+4. Electron renders the real desktop app on display `:99`.
+5. **CDP on port 9825** enables Chrome MCP and browser-tool automation.
 
 ## Testing the customization system
 
@@ -44,7 +52,7 @@ Then open port 6080 in your browser — you'll see the actual OpenWork desktop a
 ```
 Your Browser
     │
-    ├── :6080 noVNC ──▶ Xvfb ──▶ Electron App (real desktop app)
+    ├── :6080 noVNC ──▶ x11vnc ──▶ XFCE/Xvfb ──▶ Electron App
     │                              │
     │                              ├── CDP :9825 (automatable)
     │                              └── Vite HMR :5173
