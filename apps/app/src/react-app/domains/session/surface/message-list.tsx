@@ -946,7 +946,7 @@ function MessageBlockRow(props: {
 
   return (
     <div
-      className={cn("flex group justify-start relative pb-4", block.isUser && "justify-end", !props.isNestedVariant && "pb-12")}
+      className={cn("flex group justify-start relative pb-4", block.isUser && "justify-end", !props.isNestedVariant && "pb-8")}
       data-message-role={block.isUser ? "user" : "assistant"}
       data-message-id={block.messageId}
       style={{ contain: "layout style paint", ...perfStyle }}
@@ -1046,7 +1046,12 @@ function MessageBlockRow(props: {
         {props.onOpenTarget ? <OpenableTargetsStrip targets={inlineOpenTargets} onOpenTarget={props.onOpenTarget} /> : null}
 
         {!props.isNestedVariant ? (
-          <div className="absolute bottom-2 right-2 flex items-center gap-0.5 opacity-100 pointer-events-auto md:opacity-0 md:pointer-events-none md:group-hover:opacity-100 md:group-hover:pointer-events-auto md:group-focus-within:opacity-100 md:group-focus-within:pointer-events-auto transition-opacity select-none">
+          <div
+            className={cn(
+              "absolute bottom-2 flex items-center gap-0.5 opacity-100 pointer-events-auto md:opacity-0 md:pointer-events-none md:group-hover:opacity-100 md:group-hover:pointer-events-auto md:group-focus-within:opacity-100 md:group-focus-within:pointer-events-auto transition-opacity select-none",
+              block.isUser ? "right-0" : "left-0",
+            )}
+          >
             {props.onRevertToMessage ? (
               <Button
                 variant="ghost"
@@ -1296,7 +1301,7 @@ function SessionTranscriptInner(props: SessionTranscriptProps) {
   const shouldUseContentVisibility = !shouldVirtualize && messageBlocks.length > 24;
 
   return (
-    <div className={cn(isNestedVariant ? "pb-0" : "pb-10")} style={{ contain: "layout paint style" }}>
+    <div className="pb-0" style={{ contain: "layout paint style" }}>
       {shouldVirtualize ? (
         // Always render the virtualized container once we've decided to
         // virtualize — even if virtualRows is empty on the very first tick
@@ -1322,7 +1327,7 @@ function SessionTranscriptInner(props: SessionTranscriptProps) {
                     virtualizer.measureElement(element);
                   }
                 }}
-                className="absolute left-0 top-0 w-full pb-4"
+                className="absolute left-0 top-0 w-full"
                 style={{
                   transform: `translateY(${virtualRow.start}px)`,
                 }}
