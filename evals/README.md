@@ -85,3 +85,6 @@ Chrome DevTools MCP. Every tool takes `browser_url` as the first argument.
 - [`browser-extension-flows.md`](./browser-extension-flows.md) — browser
   extension plugin loading, built-in browser navigation, composer extensions
   menu, extension toggle, and stale MCP migration.
+- [`session-sidebar-status-flows.md`](./session-sidebar-status-flows.md) —
+  off-screen session streaming indicators, stop/idle cleanup, and independent
+  sidebar status across sessions.
