@@ -13,6 +13,7 @@ import type {
   AgentPartInput,
   FilePartInput,
   ProviderListResponse,
+  SessionStatus,
   TextPartInput,
 } from "@opencode-ai/sdk/v2/client";
 
@@ -71,6 +72,7 @@ import {
   isDesktopRuntime,
   isSandboxWorkspace,
   normalizeDirectoryPath,
+  normalizeSessionStatus,
   resolveModelDisplayName,
   safeStringify,
 } from "../../app/utils";
@@ -388,11 +390,12 @@ function toSessionGroups(
 // Don't compose `<baseUrl>/workspace/<id>` here.
 
 function isActiveSessionStatus(status: unknown) {
-  return status === "running" || status === "retry" || status === "busy";
+  return status === "running" || status === "retry" || status === "busy" || status === "streaming";
 }
 
 function getSessionStatus(session: any) {
-  return session?.status ?? session?.state ?? session?.runStatus ?? null;
+  const status = session?.status ?? session?.state ?? session?.runStatus ?? null;
+  return typeof status === "string" ? status : normalizeSessionStatus(status);
 }
 
 async function fileToDataUrl(file: File) {
@@ -490,6 +493,7 @@ export function SessionRoute() {
   const [workspaces, setWorkspaces] = useState<RouteWorkspace[]>([]);
   const [workspaceOrderIds, setWorkspaceOrderIds] = useState<string[]>(() => readWorkspaceOrderIds());
   const [sessionsByWorkspaceId, setSessionsByWorkspaceId] = useState<Record<string, any[]>>({});
+  const [runtimeSessionStatusById, setRuntimeSessionStatusById] = useState<Record<string, string>>({});
   const [errorsByWorkspaceId, setErrorsByWorkspaceId] = useState<Record<string, string | null>>({});
   const [workspaceConnectionOverrides, setWorkspaceConnectionOverrides] = useState<Record<string, WorkspaceConnectionState>>({});
   const [routeError, setRouteError] = useState<string | null>(null);
@@ -664,6 +668,19 @@ export function SessionRoute() {
         return id ? [id] : [];
       }),
     [selectedWorkspaceId, sessionsByWorkspaceId],
+  );
+  const listedSessionStatusById = useMemo(() => {
+    const next: Record<string, string> = {};
+    for (const session of Object.values(sessionsByWorkspaceId).flat()) {
+      const id = String(session?.id ?? "").trim();
+      if (!id) continue;
+      next[id] = getSessionStatus(session);
+    }
+    return next;
+  }, [sessionsByWorkspaceId]);
+  const sidebarSessionStatusById = useMemo(
+    () => ({ ...listedSessionStatusById, ...runtimeSessionStatusById }),
+    [listedSessionStatusById, runtimeSessionStatusById],
   );
 
   const backgroundSessionLoadInFlight = useRef<Map<string, number>>(new Map());
@@ -1095,6 +1112,16 @@ export function SessionRoute() {
       return next;
     });
   }, [selectedWorkspaceId]);
+
+  const handleRuntimeSessionStatus = useCallback((update: { sessionId: string; status: SessionStatus }) => {
+    const sessionId = update.sessionId;
+    if (!sessionId) return;
+    const status = normalizeSessionStatus(update.status);
+    setRuntimeSessionStatusById((current) => {
+      if (current[sessionId] === status) return current;
+      return { ...current, [sessionId]: status };
+    });
+  }, []);
 
   useEffect(() => {
     workspacesRef.current = workspaces;
@@ -2599,6 +2626,7 @@ export function SessionRoute() {
         opencodeBaseUrl={opencodeBaseUrl}
         openworkToken={selectedWorkspaceServerToken}
         onSessionUpdated={handleRuntimeSessionUpdated}
+        onSessionStatus={handleRuntimeSessionStatus}
       />
     ) : null}
     <SessionPage
@@ -2740,7 +2768,7 @@ export function SessionRoute() {
         selectedWorkspaceId,
         selectedSessionId,
         developerMode: false,
-        sessionStatusById: {},
+        sessionStatusById: sidebarSessionStatusById,
         connectingWorkspaceId: null,
         workspaceConnectionStateById,
         newTaskDisabled: !canCreateTask,
