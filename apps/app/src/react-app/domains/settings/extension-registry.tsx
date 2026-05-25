@@ -8,6 +8,12 @@ import { extensionContribution } from "../../../app/extensions";
  * Each extension picks what it needs; unused fields are ignored.
  */
 export type ExtensionConfigContext = {
+  computerUse?: {
+    connected: boolean;
+    connecting: boolean;
+    onConnect: () => void | Promise<void>;
+    onRefresh: () => void | Promise<void>;
+  };
   imageExtension: {
     busy: boolean;
     status: string | null;

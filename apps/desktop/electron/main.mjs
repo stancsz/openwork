@@ -1,5 +1,5 @@
 import { createHash, randomBytes } from "node:crypto";
-import { execFileSync } from "node:child_process";
+import { execFileSync, spawn } from "node:child_process";
 import { createServer } from "node:http";
 import net from "node:net";
 import { existsSync } from "node:fs";
@@ -43,6 +43,144 @@ const RELEASE_DOWNLOAD_BASE_URL = "https://github.com/different-ai/openwork/rele
 const RELEASE_PAGE_URL = "https://github.com/different-ai/openwork/releases/latest";
 const DOCS_PAGE_URL = "https://openworklabs.com/docs";
 const BROWSER_PLUGIN = "opencode-chrome-devtools";
+const COMPUTER_USE_HELPER_APP_NAME = "Computer Use.app";
+const COMPUTER_USE_HELPER_EXECUTABLE = "ComputerUse";
+
+function computerUseHelperExecutablePath() {
+  const explicitBinary = process.env.OPENWORK_COMPUTER_USE_BINARY?.trim();
+  const explicitApp = process.env.OPENWORK_COMPUTER_USE_APP?.trim();
+  const candidates = [
+    explicitBinary,
+    explicitApp ? path.join(explicitApp, "Contents", "MacOS", COMPUTER_USE_HELPER_EXECUTABLE) : null,
+    process.resourcesPath
+      ? path.join(process.resourcesPath, "helpers", COMPUTER_USE_HELPER_APP_NAME, "Contents", "MacOS", COMPUTER_USE_HELPER_EXECUTABLE)
+      : null,
+    path.resolve(__dirname, "..", "resources", "helpers", COMPUTER_USE_HELPER_APP_NAME, "Contents", "MacOS", COMPUTER_USE_HELPER_EXECUTABLE),
+  ].filter(Boolean);
+
+  return candidates.find((candidate) => existsSync(candidate)) ?? null;
+}
+
+function getComputerUseMcpCommand() {
+  const helperExecutable = computerUseHelperExecutablePath();
+  if (helperExecutable) return [helperExecutable, "mcp"];
+
+  if (app.isPackaged) {
+    throw new Error("Computer Use helper app is missing from this OpenWork build.");
+  }
+
+  if (process.env.OPENWORK_DEV_MODE === "1") {
+    return ["node", path.resolve(__dirname, "../../..", "packages/handsfree/bin/openwork-handsfree-computer-use.mjs"), "mcp"];
+  }
+  return ["npx", "-y", "@openwork/handsfree", "mcp"];
+}
+
+function callComputerUseMcpTool(name, args = {}) {
+  const [command, ...commandArgs] = getComputerUseMcpCommand();
+  return new Promise((resolve, reject) => {
+    const child = spawn(command, commandArgs, {
+      stdio: ["pipe", "pipe", "pipe"],
+      env: process.env,
+    });
+    let stdoutBuffer = "";
+    let stderr = "";
+    let settled = false;
+
+    const cleanup = () => {
+      clearTimeout(timeout);
+      child.kill();
+    };
+
+    const fail = (error) => {
+      if (settled) return;
+      settled = true;
+      cleanup();
+      reject(error);
+    };
+
+    const finish = (response) => {
+      if (settled) return;
+      settled = true;
+      cleanup();
+      resolve(response);
+    };
+
+    const timeout = setTimeout(() => {
+      fail(new Error(`Computer Use MCP ${name} timed out.${stderr.trim() ? ` ${stderr.trim()}` : ""}`));
+    }, 45_000);
+
+    child.stdout.setEncoding("utf8");
+    child.stdout.on("data", (chunk) => {
+      stdoutBuffer += chunk;
+      for (;;) {
+        const newlineIndex = stdoutBuffer.indexOf("\n");
+        if (newlineIndex === -1) break;
+        const line = stdoutBuffer.slice(0, newlineIndex).trim();
+        stdoutBuffer = stdoutBuffer.slice(newlineIndex + 1);
+        if (!line) continue;
+        try {
+          const response = JSON.parse(line);
+          if (response.id === 2) {
+            finish(response);
+            return;
+          }
+        } catch {
+          // Package managers can write progress lines; ignore non-JSON stdout.
+        }
+      }
+    });
+
+    child.stderr.setEncoding("utf8");
+    child.stderr.on("data", (chunk) => {
+      stderr += chunk;
+    });
+
+    child.on("error", fail);
+    child.on("exit", (code) => {
+      if (!settled && code !== 0) {
+        fail(new Error(stderr.trim() || `Computer Use MCP exited with status ${code ?? "unknown"}.`));
+      }
+    });
+
+    child.stdin.write(`${JSON.stringify({ jsonrpc: "2.0", id: 1, method: "initialize", params: {} })}\n`);
+    child.stdin.write(`${JSON.stringify({ jsonrpc: "2.0", method: "notifications/initialized" })}\n`);
+    child.stdin.write(`${JSON.stringify({ jsonrpc: "2.0", id: 2, method: "tools/call", params: { name, arguments: args } })}\n`);
+  });
+}
+
+function computerUseToolText(response) {
+  const content = response?.result?.content;
+  if (!Array.isArray(content)) return "";
+  const textPart = content.find((part) => part?.type === "text" && typeof part.text === "string");
+  return textPart?.text ?? "";
+}
+
+async function checkComputerUsePermissions() {
+  const response = await callComputerUseMcpTool("check_permissions");
+  const text = computerUseToolText(response);
+  try {
+    const parsed = JSON.parse(text);
+    return {
+      ok: parsed?.ok === true,
+      accessibility: parsed?.accessibility === true,
+      screenRecording: parsed?.screenRecording === true,
+    };
+  } catch {
+    return {
+      ok: false,
+      accessibility: false,
+      screenRecording: false,
+      error: text || "Computer Use permission check returned an unreadable response.",
+    };
+  }
+}
+
+function computerUsePermissionSettingsUrl(target) {
+  if (target === "screenRecording") {
+    return "x-apple.systempreferences:com.apple.preference.security?Privacy_ScreenCapture";
+  }
+  return "x-apple.systempreferences:com.apple.preference.security?Privacy_Accessibility";
+}
 
 // Production Electron shares the same on-disk state folder as the Tauri shell
 // so in-place migration is a no-op for almost every file. Dev mode uses the
@@ -2315,11 +2453,16 @@ async function handleDesktopInvoke(event, command, ...args) {
       }
       return ["npx", "-y", "openwork-ui-mcp"];
     }
-    case "getHandsFreeMcpCommand": {
-      if (process.env.OPENWORK_DEV_MODE === "1") {
-        return ["node", path.resolve(__dirname, "../../..", "packages/handsfree/bin/openwork-handsfree-computer-use.mjs"), "mcp"];
-      }
-      return ["npx", "-y", "@openwork/handsfree", "mcp"];
+    case "getComputerUseMcpCommand": {
+      return getComputerUseMcpCommand();
+    }
+    case "checkComputerUsePermissions": {
+      return checkComputerUsePermissions();
+    }
+    case "openComputerUsePermissionSettings": {
+      const target = String(args[0] ?? "accessibility");
+      await shell.openExternal(computerUsePermissionSettingsUrl(target));
+      return { ok: true };
     }
     case "getOpenworkUiMcpEnvironment": {
       return {

@@ -39,6 +39,7 @@ import { AiSettingsView } from "../domains/settings/pages/ai-view";
 // Side-effect imports: register extension config components into the registry.
 import "../domains/settings/openai-image-gen-config";
 import "../domains/settings/ollama-config";
+import "../domains/settings/computer-use-config";
 import "../domains/settings/browser-extension-config";
 import "../domains/settings/openwork-voice-config";
 import { getExtensionConfigSlot, type ExtensionConfigContext } from "../domains/settings/extension-registry";
@@ -2052,6 +2053,12 @@ function SettingsRouteContent(props: SettingsSurfaceProps = {}) {
                   void connectionsStore.connectMcp(entry);
                 }}
                 configSlotForEntry={(entry) => getExtensionConfigSlot(entry, {
+                  computerUse: {
+                    connected: connectionsSnapshot.mcpServers.some((server) => server.name === "computer-use"),
+                    connecting: connectionsSnapshot.mcpConnectingName === entry.name,
+                    onConnect: () => connectionsStore.connectMcp(entry),
+                    onRefresh: () => connectionsStore.refreshMcpServers(),
+                  },
                   imageExtension: {
                     busy: imageExtensionBusy || imageGenerationBusy,
                     status: imageExtensionStatus ?? imageGenerationStatus,

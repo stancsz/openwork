@@ -41,7 +41,7 @@ export type OpenWorkExtensionResource = {
   packageName?: string;
   providerId?: string;
   mcpServerName?: string;
-  localCommandRef?: "openwork.handsfreeMcp" | "openwork.uiMcp";
+  localCommandRef?: "openwork.computerUseMcp" | "openwork.uiMcp";
   required?: boolean;
 };
 
@@ -149,44 +149,44 @@ export const BUILT_IN_OPENWORK_EXTENSION_MANIFESTS: OpenWorkExtensionManifest[] 
   },
   {
     schemaVersion: 1,
-    id: "handsfree-computer-use",
-    name: "HandsFree Computer Use",
+    id: "computer-use",
+    name: "Computer Use",
     description: "Control macOS apps through semantic accessibility refs, screenshots, background-safe clicks, keyboard input, and strict mode.",
     preview: true,
     source: { format: "openwork-builtin", origin: "builtin", trusted: true },
     icon: { src: "/openwork-mark.svg" },
-    composer: { prompt: "Use HandsFree Computer Use to " },
+    composer: { prompt: "Use Computer Use to " },
     setup: {
-      instructions: "HandsFree runs as a local MCP server backed by a macOS accessibility runtime. Grant Accessibility and Screen Recording permissions when macOS asks, then connect the MCP server in this workspace.",
-      primaryCta: "Connect HandsFree MCP",
+      instructions: "Computer Use runs as a local MCP server backed by a macOS accessibility runtime. Grant Accessibility and Screen Recording permissions when macOS asks, then connect the MCP server in this workspace.",
+      primaryCta: "Connect Computer Use MCP",
       secondaryCta: "Check macOS permissions",
-      testActionRef: "openwork.handsfree.healthCheck",
+      testActionRef: "openwork.computerUse.healthCheck",
     },
     resources: [
       {
         type: "mcp",
-        id: "handsfree-computer-use-mcp",
-        label: "HandsFree MCP",
-        mcpServerName: "handsfree-computer-use",
+        id: "computer-use-mcp",
+        label: "Computer Use MCP",
+        mcpServerName: "computer-use",
         command: ["npx", "-y", "@openwork/handsfree", "mcp"],
-        localCommandRef: "openwork.handsfreeMcp",
+        localCommandRef: "openwork.computerUseMcp",
         required: true,
       },
       {
         type: "native-binary",
-        id: "handsfree-computer-use-native",
+        id: "computer-use-native",
         label: "macOS accessibility runtime",
         packageName: "@openwork/handsfree",
         required: true,
       },
     ],
     contributions: [
-      { type: "setup-instructions", ref: "openwork.handsfree.setup", location: "settings-detail" },
-      { type: "native-capability", ref: "openwork.handsfree.axPermissions", label: "Accessibility and Screen Recording" },
-      { type: "test-action", ref: "openwork.handsfree.healthCheck", label: "Verify HandsFree MCP" },
-      { type: "composer-prompt", prompt: "Use HandsFree Computer Use to ", location: "composer" },
+      { type: "setup-instructions", ref: "openwork.computerUse.setup", location: "settings-detail" },
+      { type: "native-capability", ref: "openwork.computerUse.axPermissions", label: "Accessibility and Screen Recording" },
+      { type: "test-action", ref: "openwork.computerUse.healthCheck", label: "Verify Computer Use MCP" },
+      { type: "composer-prompt", prompt: "Use Computer Use to ", location: "composer" },
     ],
-    lifecycle: { reload: ["mcp"], detection: ["mcp:handsfree-computer-use"] },
+    lifecycle: { reload: ["mcp"], detection: ["mcp:computer-use"] },
     platform: ["darwin"],
   },
   {

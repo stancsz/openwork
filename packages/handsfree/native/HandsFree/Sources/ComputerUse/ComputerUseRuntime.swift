@@ -9,14 +9,14 @@ actor ComputerUseRuntime {
     private var activationSession: BackgroundActivationSession?
     private var activationKey: String?
     private var activatedWindowKey: String?
+    private var activationPreviousPID: pid_t?
+    private var activationTargetPID: pid_t?
+    private var frontmostMonitor: FrontmostApplicationMonitor?
 
     func setStrictMode(_ enabled: Bool) -> ActionMetadata {
         strictMode = enabled
         if !enabled {
-            activationSession?.stop()
-            activationSession = nil
-            activationKey = nil
-            activatedWindowKey = nil
+            resetBackgroundActivation()
         }
         return ActionMetadata(
             ok: true,
@@ -31,10 +31,7 @@ actor ComputerUseRuntime {
     func snapshot(appName: String?, strict requestedStrict: Bool?) async throws -> AppSnapshot {
         let effectiveStrict = requestedStrict ?? strictMode
         if !effectiveStrict {
-            activationSession?.stop()
-            activationSession = nil
-            activationKey = nil
-            activatedWindowKey = nil
+            resetBackgroundActivation()
         }
 
         var target = try accessibility.resolveTarget(appName: appName)
@@ -60,6 +57,7 @@ actor ComputerUseRuntime {
         let effectiveStrict = requestedStrict ?? snapshot.strictMode
 
         if let record = findRecord(ref: ref, index: index, in: snapshot) {
+            AgentCursorOverlay.shared.show(at: record.semantic.frame.center)
             if record.semantic.capabilities.canPress, accessibility.press(record: record) {
                 return ActionMetadata(ok: true, path: .accessibility, strictMode: effectiveStrict, backgroundSafe: true, fallbackUsed: false, message: "Pressed \(record.semantic.ref) via AXPress.")
             }
@@ -112,6 +110,7 @@ actor ComputerUseRuntime {
             }
             return CGPoint(x: snapshot.screenshotMeta.capturedBounds.midX, y: snapshot.screenshotMeta.capturedBounds.midY)
         }()
+        AgentCursorOverlay.shared.show(at: point)
 
         if effectiveStrict {
             guard let windowNumber = snapshot.windowNumber else {
@@ -130,6 +129,7 @@ actor ComputerUseRuntime {
         guard let record = findRecord(ref: ref, index: index, in: snapshot) else {
             throw ComputerUseError.invalidElement(ref ?? index.map(String.init) ?? "<missing>")
         }
+        AgentCursorOverlay.shared.show(at: record.semantic.frame.center)
         let ok = accessibility.setValue(record: record, value: value)
         return ActionMetadata(ok: ok, path: .accessibility, strictMode: snapshot.strictMode, backgroundSafe: true, fallbackUsed: false, message: ok ? "Set \(record.semantic.ref) via AXValue." : "Element value is not settable.")
     }
@@ -139,6 +139,7 @@ actor ComputerUseRuntime {
         guard let record = findRecord(ref: ref, index: index, in: snapshot) else {
             throw ComputerUseError.invalidElement(ref ?? index.map(String.init) ?? "<missing>")
         }
+        AgentCursorOverlay.shared.show(at: record.semantic.frame.center)
         let ok = accessibility.performAction(record: record, action: action)
         return ActionMetadata(ok: ok, path: .accessibility, strictMode: snapshot.strictMode, backgroundSafe: true, fallbackUsed: false, message: ok ? "Performed \(action) on \(record.semantic.ref)." : "AX action \(action) failed.")
     }
@@ -151,6 +152,7 @@ actor ComputerUseRuntime {
 
     private func clickPoint(_ point: CGPoint, clickCount: Int, strict: Bool, fallbackUsed: Bool) async throws -> ActionMetadata {
         let snapshot = try requireSnapshot()
+        AgentCursorOverlay.shared.show(at: point)
         if strict {
             guard let windowNumber = snapshot.windowNumber else {
                 throw ComputerUseError.strictModeViolation("background click requires a CG window number")
@@ -164,16 +166,19 @@ actor ComputerUseRuntime {
     }
 
     private func ensureBackgroundActivation(target: WindowTarget) async throws -> Bool {
+        ensureFrontmostMonitor()
         guard let previousPID = NSWorkspace.shared.frontmostApplication?.processIdentifier else {
             throw ComputerUseError.noFrontmostApplication
         }
         let nextActivationKey = "\(previousPID):\(target.pid)"
         if activationKey != nextActivationKey {
-            activationSession?.stop()
+            resetBackgroundActivation()
             let next = BackgroundActivationSession(previousPID: previousPID, targetPID: target.pid)
             try next.start()
             activationSession = next
             activationKey = nextActivationKey
+            activationPreviousPID = previousPID
+            activationTargetPID = target.pid
             activatedWindowKey = nil
         }
 
@@ -186,6 +191,28 @@ actor ComputerUseRuntime {
             activatedWindowKey = nextWindowKey
         }
         return true
+    }
+
+    private func ensureFrontmostMonitor() {
+        if frontmostMonitor != nil { return }
+        frontmostMonitor = FrontmostApplicationMonitor { [weak self] pid in
+            Task { await self?.frontmostApplicationChanged(pid: pid) }
+        }
+    }
+
+    private func frontmostApplicationChanged(pid: pid_t?) {
+        guard let pid, activationSession != nil else { return }
+        if pid == activationPreviousPID { return }
+        resetBackgroundActivation()
+    }
+
+    private func resetBackgroundActivation() {
+        activationSession?.stop()
+        activationSession = nil
+        activationKey = nil
+        activatedWindowKey = nil
+        activationPreviousPID = nil
+        activationTargetPID = nil
     }
 
     private func requireSnapshot() throws -> AppSnapshot {
