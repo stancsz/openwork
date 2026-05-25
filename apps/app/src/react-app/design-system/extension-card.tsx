@@ -25,8 +25,6 @@ export type ExtensionCardProps = {
   disabled?: boolean;
   /** Whether this item is hidden from the normal catalog view. */
   hidden?: boolean;
-  /** Whether this extension is still in preview. */
-  preview?: boolean;
   /** Reason this item is visible but unavailable. */
   disabledReason?: string | null;
   /** Action label shown at bottom. */
@@ -69,7 +67,6 @@ export function ExtensionCard(props: ExtensionCardProps) {
     connecting = false,
     disabled = false,
     hidden = false,
-    preview = false,
     disabledReason = null,
     actionLabel,
     onClick,
@@ -134,11 +131,6 @@ export function ExtensionCard(props: ExtensionCardProps) {
             {hidden ? (
               <span className="shrink-0 rounded-md bg-gray-3 px-1.5 py-0.5 text-[10px] font-medium text-gray-11">
                 Hidden
-              </span>
-            ) : null}
-            {preview ? (
-              <span className="rounded-md bg-blue-3 px-1.5 py-0.5 text-[10px] font-medium text-blue-11">
-                Preview
               </span>
             ) : null}
             {disabledReason ? (
