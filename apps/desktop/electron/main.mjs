@@ -83,52 +83,54 @@ function getComputerUseMcpCommand() {
 }
 
 async function checkComputerUsePermissions() {
-  return computerUsePermissionAppRequest("/status", { launch: false });
+  // Quick single attempt with no launch — returns appRunning:false if not reachable.
+  return computerUsePermissionFetch("/status", { method: "GET", timeoutMs: 800 });
 }
 
 async function computerUsePermissionAppRequest(route, options = {}) {
-  if (options.launch !== false) {
-    await ensureComputerUsePermissionApp();
-  }
-
-  let lastError;
-  const attempts = options.launch === false ? 1 : 12;
-  for (let attempt = 0; attempt < attempts; attempt += 1) {
-    const controller = new AbortController();
-    const timeout = setTimeout(() => controller.abort(), 1_000);
-    try {
-      const response = await fetch(`http://127.0.0.1:49731${route}`, {
-        method: options.method ?? "GET",
-        signal: controller.signal,
-      });
-      const parsed = await response.json();
-      return {
-        ok: parsed?.ok === true,
-        accessibility: parsed?.accessibility === true,
-        screenRecording: parsed?.screenRecording === true,
-        error: typeof parsed?.error === "string" ? parsed.error : undefined,
-      };
-    } catch (error) {
-      lastError = error;
-      await new Promise((resolve) => setTimeout(resolve, 250));
-    } finally {
-      clearTimeout(timeout);
-    }
-  }
-
-  if (options.launch === false) {
-    return { ok: false, accessibility: false, screenRecording: false, error: undefined };
-  }
-  if (options.allowUnavailable === true) {
-    return { ok: false, accessibility: false, screenRecording: false, error: undefined };
-  }
-  throw lastError ?? new Error("OpenWork Computer Use did not respond.");
-}
-
-async function ensureComputerUsePermissionApp() {
   const appPath = computerUseHelperAppPath();
   if (!appPath) throw new Error("OpenWork Computer Use is missing from this OpenWork build.");
+
+  // Launch (or bring to front) the helper app.
   await shell.openPath(appPath);
+
+  // Give the Swift app time to start before the first poll.
+  await new Promise((resolve) => setTimeout(resolve, 800));
+
+  // Poll until the HTTP server responds (up to ~6 seconds total).
+  let lastError;
+  for (let attempt = 0; attempt < 20; attempt += 1) {
+    try {
+      return await computerUsePermissionFetch(route, { method: options.method ?? "GET", timeoutMs: 1_200 });
+    } catch (error) {
+      lastError = error;
+      await new Promise((resolve) => setTimeout(resolve, 300));
+    }
+  }
+  throw lastError ?? new Error("OpenWork Computer Use did not respond after launch.");
+}
+
+async function computerUsePermissionFetch(route, options = {}) {
+  const controller = new AbortController();
+  const timeout = setTimeout(() => controller.abort(), options.timeoutMs ?? 1_000);
+  try {
+    const response = await fetch(`http://127.0.0.1:49731${route}`, {
+      method: options.method ?? "GET",
+      signal: controller.signal,
+    });
+    const parsed = await response.json();
+    return {
+      ok: parsed?.ok === true,
+      accessibility: parsed?.accessibility === true,
+      screenRecording: parsed?.screenRecording === true,
+      appRunning: true,
+      error: typeof parsed?.error === "string" ? parsed.error : undefined,
+    };
+  } catch {
+    return { ok: false, accessibility: false, screenRecording: false, appRunning: false };
+  } finally {
+    clearTimeout(timeout);
+  }
 }
 
 // Production Electron shares the same on-disk state folder as the Tauri shell
@@ -2409,7 +2411,8 @@ async function handleDesktopInvoke(event, command, ...args) {
       return checkComputerUsePermissions();
     }
     case "openComputerUsePermissionSetup": {
-      return computerUsePermissionAppRequest("/status", { allowUnavailable: true });
+      // Launch the app and wait until it responds.
+      return computerUsePermissionAppRequest("/status");
     }
     case "openComputerUsePermissionSettings": {
       const target = String(args[0] ?? "accessibility");
