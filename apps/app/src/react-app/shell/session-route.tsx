@@ -712,6 +712,7 @@ export function SessionRoute() {
       const backoffMs = (attempt: number) => Math.min(500 * Math.pow(2, attempt), 4_000);
 
       const fetchOnce = async (workspace: RouteWorkspace, attempt: number): Promise<void> => {
+        const isRemoteOpenworkWorkspace = workspace.workspaceType === "remote" && workspace.remoteType !== "opencode";
         const endpoint = endpointForWorkspace(workspace);
         if (!endpoint) {
           if (workspace.workspaceType === "remote") {
@@ -735,14 +736,25 @@ export function SessionRoute() {
         if (startedAt && Date.now() - startedAt < 5_000) return;
         const requestStartedAt = Date.now();
         backgroundSessionLoadInFlight.current.set(workspace.id, requestStartedAt);
+        if (isRemoteOpenworkWorkspace) {
+          setWorkspaceConnectionOverrides((current) => ({
+            ...current,
+            [workspace.id]: {
+              status: "connecting",
+              message: t("workspace_list.loading_remote_tasks"),
+              checkedAt: null,
+            },
+          }));
+        }
         try {
           const response = await endpoint.client.listSessions(endpoint.workspaceId, { limit: 200 });
+          const fetchedItems = response.items ?? [];
           const workspaceRoot = normalizeDirectoryPath(workspace.path ?? "");
-          const items = workspaceRoot
-            ? (response.items ?? []).filter((session: any) =>
+          const items = workspaceRoot && !isRemoteOpenworkWorkspace
+            ? fetchedItems.filter((session: any) =>
                 normalizeDirectoryPath(session?.directory ?? "") === workspaceRoot,
               )
-            : (response.items ?? []);
+            : fetchedItems;
           setSessionsByWorkspaceId((current) => {
             const nextItems = mergeFetchedSessionsWithPending(workspace.id, items, current[workspace.id] ?? []);
             const next = { ...current, [workspace.id]: nextItems };
@@ -751,6 +763,18 @@ export function SessionRoute() {
           });
           setErrorsByWorkspaceId((current) => ({ ...current, [workspace.id]: null }));
           setWorkspaceConnectionOverrides((current) => {
+            if (isRemoteOpenworkWorkspace) {
+              return {
+                ...current,
+                [workspace.id]: {
+                  status: "connected",
+                  message: items.length > 0
+                    ? t("workspace_list.connected_loaded_tasks", { count: items.length })
+                    : t("workspace.connected_no_tasks"),
+                  checkedAt: Date.now(),
+                },
+              };
+            }
             if (current[workspace.id]?.status !== "error") return current;
             const next = { ...current };
             delete next[workspace.id];
@@ -795,7 +819,6 @@ export function SessionRoute() {
               [workspace.id]: connectionState.message ?? "Remote worker connection failed.",
             }));
             setWorkspaceConnectionOverrides((current) => {
-              if (current[workspace.id]?.status === "connecting") return current;
               return {
                 ...current,
                 [workspace.id]: connectionState,
