@@ -119,7 +119,10 @@ async function computerUsePermissionAppRequest(route, options = {}) {
   if (options.launch === false) {
     return { ok: false, accessibility: false, screenRecording: false, error: undefined };
   }
-    throw lastError ?? new Error("OpenWork Computer Use did not respond.");
+  if (options.allowUnavailable === true) {
+    return { ok: false, accessibility: false, screenRecording: false, error: undefined };
+  }
+  throw lastError ?? new Error("OpenWork Computer Use did not respond.");
 }
 
 async function ensureComputerUsePermissionApp() {
@@ -2406,7 +2409,7 @@ async function handleDesktopInvoke(event, command, ...args) {
       return checkComputerUsePermissions();
     }
     case "openComputerUsePermissionSetup": {
-      return computerUsePermissionAppRequest("/status");
+      return computerUsePermissionAppRequest("/status", { allowUnavailable: true });
     }
     case "openComputerUsePermissionSettings": {
       const target = String(args[0] ?? "accessibility");

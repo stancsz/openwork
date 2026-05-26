@@ -157,9 +157,9 @@ export function ComputerUseConfig(props: ComputerUseConfigProps) {
           description="Adds the local Computer Use server to this workspace so Composer can use the computer-control tools."
           complete={props.connected}
         >
-          <Button className="w-full sm:w-auto" onClick={() => void props.onConnect?.()} disabled={!props.onConnect || props.connected || props.connecting}>
-            {props.connecting ? <Loader2 className="size-4 animate-spin" /> : null}
-            {props.connected ? "MCP configured" : props.connecting ? "Connecting..." : "Connect MCP"}
+          <Button className="min-h-10 w-full whitespace-normal text-center lg:w-auto" onClick={() => void props.onConnect?.()} disabled={!props.onConnect || props.connected || props.connecting}>
+            {props.connecting ? <Loader2 className="size-4 shrink-0 animate-spin" /> : null}
+            <span className="min-w-0 break-words">{props.connected ? "Configured" : props.connecting ? "Connecting..." : "Connect MCP"}</span>
           </Button>
         </SetupRow>
 
@@ -169,31 +169,31 @@ export function ComputerUseConfig(props: ComputerUseConfigProps) {
           complete={allPermissionsGranted}
         >
           <div className="flex w-full min-w-0 flex-col gap-3">
-            <div className="grid gap-2 sm:grid-cols-2">
+            <div className="grid gap-2 xl:grid-cols-2">
               <PermissionStatus label="Accessibility" granted={permissions?.accessibility === true} unknown={!permissions} />
               <PermissionStatus label="Screen Recording" granted={permissions?.screenRecording === true} unknown={!permissions} />
             </div>
-            <Button className="min-h-10 w-full justify-center" onClick={() => void openPermissionHelper()}>
-              <Settings2 className="size-4" />
-              Grant permissions
+            <Button className="min-h-10 w-full justify-center whitespace-normal text-center" onClick={() => void openPermissionHelper()}>
+              <Settings2 className="size-4 shrink-0" />
+              <span className="min-w-0 break-words">Grant permissions</span>
             </Button>
           </div>
         </SetupRow>
       </CardContent>
       <CardFooter className="border-t border-border">
-        <div className="flex w-full flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
+        <div className="flex w-full flex-col gap-3 xl:flex-row xl:items-center xl:justify-between">
           <div className="text-xs text-muted-foreground">
             {allPermissionsGranted ? "Permissions verified. Try a Composer prompt that asks Computer Use to open an app and type." : "After granting permissions, return here and verify again."}
           </div>
-          <div className="flex w-full flex-col gap-2 sm:w-auto sm:flex-row">
+          <div className="flex w-full flex-col gap-2 xl:w-auto xl:flex-row">
             {props.onRefresh ? (
-              <Button className="w-full sm:w-auto" variant="outline" onClick={() => void props.onRefresh?.()}>
-                Refresh MCP
+              <Button className="min-h-10 w-full whitespace-normal text-center xl:w-auto" variant="outline" onClick={() => void props.onRefresh?.()}>
+                <span className="min-w-0 break-words">Refresh MCP</span>
               </Button>
             ) : null}
-            <Button className="w-full sm:w-auto" onClick={() => void refreshPermissions()} disabled={checking}>
-              {checking ? <Loader2 className="size-4 animate-spin" /> : null}
-              Verify permissions
+            <Button className="min-h-10 w-full whitespace-normal text-center xl:w-auto" onClick={() => void refreshPermissions()} disabled={checking}>
+              {checking ? <Loader2 className="size-4 shrink-0 animate-spin" /> : null}
+              <span className="min-w-0 break-words">Verify permissions</span>
             </Button>
           </div>
         </div>
@@ -205,7 +205,7 @@ export function ComputerUseConfig(props: ComputerUseConfigProps) {
 function SetupRow(props: { title: string; description: string; complete: boolean; children: ReactNode }) {
   return (
     <div className="rounded-xl border border-border bg-card p-3">
-      <div className="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
+      <div className="flex flex-col gap-3 xl:flex-row xl:items-start xl:justify-between">
         <div className="flex min-w-0 flex-1 gap-3">
           <StatusIcon complete={props.complete} />
           <div className="min-w-0">
@@ -213,7 +213,7 @@ function SetupRow(props: { title: string; description: string; complete: boolean
             <div className="mt-1 text-xs leading-relaxed text-muted-foreground">{props.description}</div>
           </div>
         </div>
-        <div className="w-full min-w-0 sm:w-[min(22rem,44%)]">{props.children}</div>
+        <div className="w-full min-w-0 xl:w-[min(22rem,44%)]">{props.children}</div>
       </div>
     </div>
   );

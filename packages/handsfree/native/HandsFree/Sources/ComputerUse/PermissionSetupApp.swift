@@ -78,12 +78,13 @@ final class PermissionSetupWindowController: NSWindowController {
 
     init() {
         let window = NSWindow(
-            contentRect: NSRect(x: 0, y: 0, width: 580, height: 540),
+            contentRect: NSRect(x: 0, y: 0, width: 620, height: 620),
             styleMask: [.titled, .closable, .miniaturizable],
             backing: .buffered,
             defer: false
         )
         window.title = "OpenWork Computer Use"
+        window.minSize = NSSize(width: 420, height: 560)
         window.center()
         super.init(window: window)
         window.contentView = makeContentView()
@@ -117,10 +118,13 @@ final class PermissionSetupWindowController: NSWindowController {
         iconHint.font = .systemFont(ofSize: 12)
         iconHint.textColor = .secondaryLabelColor
         iconHint.alignment = .center
+        iconHint.lineBreakMode = .byWordWrapping
+        iconHint.maximumNumberOfLines = 2
 
         let title = NSTextField(labelWithString: "OpenWork Computer Use")
         title.font = .systemFont(ofSize: 26, weight: .semibold)
         title.alignment = .center
+        title.lineBreakMode = .byTruncatingTail
 
         let subtitle = NSTextField(wrappingLabelWithString: "Grant Accessibility and Screen Recording to this app. After both are granted, relaunch OpenWork so macOS applies the new permissions cleanly.")
         subtitle.font = .systemFont(ofSize: 14)
@@ -156,12 +160,16 @@ final class PermissionSetupWindowController: NSWindowController {
 
         accessibilityRow.widthAnchor.constraint(equalTo: stack.widthAnchor).isActive = true
         screenRecordingRow.widthAnchor.constraint(equalTo: stack.widthAnchor).isActive = true
+        iconHint.widthAnchor.constraint(equalTo: stack.widthAnchor).isActive = true
+        subtitle.widthAnchor.constraint(equalTo: stack.widthAnchor).isActive = true
         footerLabel.widthAnchor.constraint(equalTo: stack.widthAnchor).isActive = true
 
         root.addSubview(stack)
         NSLayoutConstraint.activate([
-            stack.leadingAnchor.constraint(equalTo: root.leadingAnchor, constant: 32),
-            stack.trailingAnchor.constraint(equalTo: root.trailingAnchor, constant: -32),
+            stack.leadingAnchor.constraint(equalTo: root.leadingAnchor, constant: 24),
+            stack.trailingAnchor.constraint(equalTo: root.trailingAnchor, constant: -24),
+            stack.topAnchor.constraint(greaterThanOrEqualTo: root.topAnchor, constant: 24),
+            stack.bottomAnchor.constraint(lessThanOrEqualTo: root.bottomAnchor, constant: -24),
             stack.centerYAnchor.constraint(equalTo: root.centerYAnchor),
         ])
         return root
@@ -170,15 +178,20 @@ final class PermissionSetupWindowController: NSWindowController {
     private func permissionRow(title: String, body: String, statusLabel: NSTextField, action: Selector) -> NSView {
         let titleLabel = NSTextField(labelWithString: title)
         titleLabel.font = .systemFont(ofSize: 16, weight: .medium)
+        titleLabel.lineBreakMode = .byTruncatingTail
 
         let bodyLabel = NSTextField(wrappingLabelWithString: body)
         bodyLabel.font = .systemFont(ofSize: 13)
         bodyLabel.textColor = .secondaryLabelColor
 
         statusLabel.font = .systemFont(ofSize: 13, weight: .medium)
+        statusLabel.lineBreakMode = .byTruncatingTail
 
         let button = NSButton(title: "Grant Permission", target: self, action: action)
         button.bezelStyle = .rounded
+        button.controlSize = .large
+        button.lineBreakMode = .byTruncatingTail
+        button.setContentHuggingPriority(.defaultLow, for: .horizontal)
 
         let textStack = NSStackView(views: [titleLabel, bodyLabel, statusLabel])
         textStack.orientation = .vertical
@@ -186,12 +199,12 @@ final class PermissionSetupWindowController: NSWindowController {
         textStack.alignment = .leading
 
         let row = NSStackView(views: [textStack, button])
-        row.orientation = .horizontal
-        row.spacing = 16
-        row.alignment = .centerY
+        row.orientation = .vertical
+        row.spacing = 12
+        row.alignment = .leading
         row.distribution = .fill
         textStack.setContentHuggingPriority(.defaultLow, for: .horizontal)
-        button.setContentHuggingPriority(.required, for: .horizontal)
+        button.widthAnchor.constraint(equalTo: row.widthAnchor).isActive = true
 
         let container = NSBox()
         container.boxType = .custom
@@ -201,7 +214,7 @@ final class PermissionSetupWindowController: NSWindowController {
         container.contentViewMargins = NSSize(width: 18, height: 14)
         container.contentView = row
         container.translatesAutoresizingMaskIntoConstraints = false
-        container.heightAnchor.constraint(greaterThanOrEqualToConstant: 124).isActive = true
+        container.heightAnchor.constraint(greaterThanOrEqualToConstant: 150).isActive = true
         return container
     }
 
