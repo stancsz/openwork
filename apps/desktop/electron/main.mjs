@@ -83,52 +83,72 @@ function getComputerUseMcpCommand() {
 }
 
 async function checkComputerUsePermissions() {
-  return computerUsePermissionAppRequest("/status", { launch: false });
+  // Single fast probe — no launch. Returns appRunning:false if helper is not up.
+  return computerUsePermissionFetch("/status", { timeoutMs: 700 });
 }
 
+async function launchAndQueryComputerUsePermissions(route, method = "GET") {
+  const appPath = computerUseHelperAppPath();
+  if (!appPath) throw new Error("OpenWork Computer Use is missing from this OpenWork build.");
+
+  // Bring to front (or start) the helper app.
+  await shell.openPath(appPath);
+
+  // Wait for AppKit to start and bind the HTTP server (Swift apps need ~0.5-1.5s).
+  await new Promise((resolve) => setTimeout(resolve, 900));
+
+  // Poll until the server responds — up to ~6 seconds total.
+  let lastError;
+  for (let i = 0; i < 20; i += 1) {
+    try {
+      return await computerUsePermissionFetch(route, { method, timeoutMs: 1_200 });
+    } catch (err) {
+      lastError = err;
+      await new Promise((resolve) => setTimeout(resolve, 300));
+    }
+  }
+  throw lastError ?? new Error("OpenWork Computer Use did not respond after launch.");
+}
+
+async function computerUsePermissionFetch(route, options = {}) {
+  const controller = new AbortController();
+  const tid = setTimeout(() => controller.abort(), options.timeoutMs ?? 1_000);
+  try {
+    const response = await fetch(`http://127.0.0.1:49731${route}`, {
+      method: options.method ?? "GET",
+      signal: controller.signal,
+    });
+    const parsed = await response.json();
+    return {
+      ok: parsed?.ok === true,
+      accessibility: parsed?.accessibility === true,
+      screenRecording: parsed?.screenRecording === true,
+      appRunning: true,
+      error: typeof parsed?.error === "string" ? parsed.error : undefined,
+    };
+  } catch {
+    return { ok: false, accessibility: false, screenRecording: false, appRunning: false };
+  } finally {
+    clearTimeout(tid);
+  }
+}
+
+// Legacy — kept for openComputerUsePermissionSettings backward compat.
 async function computerUsePermissionAppRequest(route, options = {}) {
   if (options.launch !== false) {
-    await ensureComputerUsePermissionApp();
+    await shell.openPath(computerUseHelperAppPath() ?? "");
   }
-
   let lastError;
   const attempts = options.launch === false ? 1 : 12;
   for (let attempt = 0; attempt < attempts; attempt += 1) {
-    const controller = new AbortController();
-    const timeout = setTimeout(() => controller.abort(), 1_000);
     try {
-      const response = await fetch(`http://127.0.0.1:49731${route}`, {
-        method: options.method ?? "GET",
-        signal: controller.signal,
-      });
-      const parsed = await response.json();
-      return {
-        ok: parsed?.ok === true,
-        accessibility: parsed?.accessibility === true,
-        screenRecording: parsed?.screenRecording === true,
-        error: typeof parsed?.error === "string" ? parsed.error : undefined,
-      };
-    } catch (error) {
-      lastError = error;
+      return await computerUsePermissionFetch(route, { method: options.method ?? "GET", timeoutMs: 1_000 });
+    } catch (err) {
+      lastError = err;
       await new Promise((resolve) => setTimeout(resolve, 250));
-    } finally {
-      clearTimeout(timeout);
     }
   }
-
-  if (options.launch === false) {
-    return { ok: false, accessibility: false, screenRecording: false, error: undefined };
-  }
-  if (options.allowUnavailable === true) {
-    return { ok: false, accessibility: false, screenRecording: false, error: undefined };
-  }
-  throw lastError ?? new Error("OpenWork Computer Use did not respond.");
-}
-
-async function ensureComputerUsePermissionApp() {
-  const appPath = computerUseHelperAppPath();
-  if (!appPath) throw new Error("OpenWork Computer Use is missing from this OpenWork build.");
-  await shell.openPath(appPath);
+  return { ok: false, accessibility: false, screenRecording: false, appRunning: false };
 }
 
 // Production Electron shares the same on-disk state folder as the Tauri shell
@@ -2409,12 +2429,13 @@ async function handleDesktopInvoke(event, command, ...args) {
       return checkComputerUsePermissions();
     }
     case "openComputerUsePermissionSetup": {
-      return computerUsePermissionAppRequest("/status", { allowUnavailable: true });
+      // Launch the helper app, wait for it to start, then return live status.
+      return launchAndQueryComputerUsePermissions("/status");
     }
     case "openComputerUsePermissionSettings": {
       const target = String(args[0] ?? "accessibility");
       const route = target === "screenRecording" ? "/request/screen-recording" : "/request/accessibility";
-      return computerUsePermissionAppRequest(route, { method: "POST" });
+      return launchAndQueryComputerUsePermissions(route, "POST");
     }
     case "getOpenworkUiMcpEnvironment": {
       return {
