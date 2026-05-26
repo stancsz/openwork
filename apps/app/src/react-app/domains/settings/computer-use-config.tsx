@@ -1,5 +1,5 @@
 /** @jsxImportSource react */
-import { useCallback, useEffect, useState, type ReactNode } from "react";
+import { useCallback, useEffect, useRef, useState, type ReactNode } from "react";
 import { CheckCircle2, CircleAlert, Loader2, RefreshCw, Settings2 } from "lucide-react";
 
 import { desktopBridge } from "../../../app/lib/desktop";
@@ -78,9 +78,52 @@ function errorMessage(error: unknown) {
 export function ComputerUseConfig(props: ComputerUseConfigProps) {
   const [permissions, setPermissions] = useState<ComputerUsePermissionStatus | null>(null);
   const [checking, setChecking] = useState(false);
-  // launching: true while we are waiting for the helper app to start
   const [launching, setLaunching] = useState(false);
+  // watchingForGrant: true while we are polling after the helper is open
+  const [watchingForGrant, setWatchingForGrant] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const watchIntervalRef = useRef<ReturnType<typeof setInterval> | null>(null);
+  const watchTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+
+  // Stop the background polling loop.
+  const stopWatching = useCallback(() => {
+    if (watchIntervalRef.current !== null) {
+      clearInterval(watchIntervalRef.current);
+      watchIntervalRef.current = null;
+    }
+    if (watchTimeoutRef.current !== null) {
+      clearTimeout(watchTimeoutRef.current);
+      watchTimeoutRef.current = null;
+    }
+    setWatchingForGrant(false);
+  }, []);
+
+  // Start polling every 2 s until both permissions are granted or 3 min pass.
+  const startWatching = useCallback(() => {
+    stopWatching();
+    setWatchingForGrant(true);
+
+    const poll = async () => {
+      if (!hasDesktopBridge()) return;
+      try {
+        const result = await desktopBridge.checkComputerUsePermissions();
+        const next = normalizePermissionStatus(result);
+        setPermissions(next);
+        if (next.accessibility && next.screenRecording) {
+          stopWatching();
+        }
+      } catch {
+        // silent — keep polling
+      }
+    };
+
+    watchIntervalRef.current = setInterval(() => void poll(), 2_000);
+    // Auto-cancel after 3 minutes so we don't poll forever.
+    watchTimeoutRef.current = setTimeout(stopWatching, 3 * 60 * 1_000);
+  }, [stopWatching]);
+
+  // Clean up on unmount.
+  useEffect(() => () => stopWatching(), [stopWatching]);
 
   const refreshPermissions = useCallback(async () => {
     if (!hasDesktopBridge()) {
@@ -110,12 +153,15 @@ export function ComputerUseConfig(props: ComputerUseConfigProps) {
     }
     setError(null);
     setLaunching(true);
+    stopWatching();
     try {
-      // This IPC call launches the helper app and polls until it responds.
-      // It throws if the helper binary cannot be found or does not start.
       const result = await desktopBridge.openComputerUsePermissionSetup();
       const next = normalizePermissionStatus(result);
       setPermissions(next);
+      // Helper is confirmed running — start polling so we pick up grants immediately.
+      if (!next.accessibility || !next.screenRecording) {
+        startWatching();
+      }
     } catch (caught) {
       setError(errorMessage(caught));
     } finally {
@@ -133,7 +179,7 @@ export function ComputerUseConfig(props: ComputerUseConfigProps) {
         <CardTitle>Computer Use setup</CardTitle>
         <CardDescription>Connect the local MCP server and grant the macOS permissions it needs to control apps.</CardDescription>
         <CardAction>
-          <Button variant="ghost" size="icon-sm" onClick={() => void refreshPermissions()} disabled={checking || launching}>
+          <Button variant="ghost" size="icon-sm" onClick={() => void refreshPermissions()} disabled={checking || launching || watchingForGrant}>
             <RefreshCw className={checking ? "animate-spin" : ""} />
           </Button>
         </CardAction>
@@ -176,14 +222,23 @@ export function ComputerUseConfig(props: ComputerUseConfigProps) {
               <PermissionPill
                 label="Accessibility"
                 granted={permissions?.accessibility === true}
-                unknown={initialChecking || (!helperRunning && !launching)}
+                unknown={initialChecking || (!helperRunning && !launching && !watchingForGrant)}
+                watching={watchingForGrant && permissions?.accessibility !== true}
               />
               <PermissionPill
                 label="Screen Recording"
                 granted={permissions?.screenRecording === true}
-                unknown={initialChecking || (!helperRunning && !launching)}
+                unknown={initialChecking || (!helperRunning && !launching && !watchingForGrant)}
+                watching={watchingForGrant && permissions?.screenRecording !== true}
               />
             </div>
+
+            {watchingForGrant && !allGranted ? (
+              <p className="flex items-center justify-center gap-1.5 text-center text-xs text-muted-foreground">
+                <Loader2 className="size-3 animate-spin" />
+                Waiting for permissions to be granted in the helper app…
+              </p>
+            ) : null}
 
             <Button
               className="min-h-10 w-full justify-center whitespace-normal text-center"
@@ -199,13 +254,13 @@ export function ComputerUseConfig(props: ComputerUseConfigProps) {
                 <>
                   <Settings2 className="size-4 shrink-0" />
                   <span className="min-w-0 break-words">
-                    {allGranted ? "Reopen helper" : "Grant permissions"}
+                    {allGranted ? "Reopen helper" : watchingForGrant ? "Reopen helper" : "Grant permissions"}
                   </span>
                 </>
               )}
             </Button>
 
-            {!helperRunning && !launching && permissions !== null && !error ? (
+            {!helperRunning && !launching && !watchingForGrant && permissions !== null && !error ? (
               <p className="text-center text-xs text-muted-foreground">
                 Helper app is not running — click above to open it.
               </p>
@@ -233,7 +288,7 @@ export function ComputerUseConfig(props: ComputerUseConfigProps) {
             ) : null}
             <Button
               className="min-h-10 w-full whitespace-normal text-center xl:w-auto"
-              onClick={() => void refreshPermissions()}
+              onClick={() => { stopWatching(); void refreshPermissions(); }}
               disabled={checking || launching}
             >
               {checking ? <Loader2 className="size-4 shrink-0 animate-spin" /> : null}
@@ -263,16 +318,20 @@ function SetupRow(props: { title: string; description: string; complete: boolean
   );
 }
 
-function PermissionPill(props: { label: string; granted: boolean; unknown: boolean }) {
-  const { label, granted, unknown } = props;
+function PermissionPill(props: { label: string; granted: boolean; unknown: boolean; watching?: boolean }) {
+  const { label, granted, unknown, watching } = props;
   return (
     <div className="flex min-w-0 items-center justify-between gap-2 rounded-lg border border-border bg-muted/40 px-3 py-2">
       <div className="flex items-center gap-2 text-sm">
-        <StatusIcon complete={granted} muted={unknown} />
+        {watching ? (
+          <Loader2 className="mt-0.5 size-4 shrink-0 animate-spin text-muted-foreground" />
+        ) : (
+          <StatusIcon complete={granted} muted={unknown} />
+        )}
         <span className="truncate">{label}</span>
       </div>
-      <span className={`shrink-0 text-xs font-medium ${granted ? "text-green-11" : unknown ? "text-muted-foreground" : "text-amber-11"}`}>
-        {unknown ? "Unknown" : granted ? "Granted" : "Needed"}
+      <span className={`shrink-0 text-xs font-medium ${granted ? "text-green-11" : watching || unknown ? "text-muted-foreground" : "text-amber-11"}`}>
+        {watching ? "Waiting…" : unknown ? "Unknown" : granted ? "Granted" : "Needed"}
       </span>
     </div>
   );

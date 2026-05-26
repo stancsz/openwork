@@ -27,9 +27,18 @@ struct ComputerUsePermissionStatus {
 
 enum ComputerUsePermissions {
     static func status() -> ComputerUsePermissionStatus {
-        ComputerUsePermissionStatus(
-            accessibility: AXIsProcessTrusted(),
-            screenRecording: CGPreflightScreenCaptureAccess()
+        // AXIsProcessTrusted() checks the live TCC state every call — reliable.
+        let accessibility = AXIsProcessTrusted()
+
+        // CGPreflightScreenCaptureAccess() can return a stale cached "false" in
+        // the same process even after the user enables the toggle in System Settings.
+        // CGRequestScreenCaptureAccess() forces a live TCC re-read and returns the
+        // real current state without showing a dialog if already decided.
+        let screenRecording = CGRequestScreenCaptureAccess()
+
+        return ComputerUsePermissionStatus(
+            accessibility: accessibility,
+            screenRecording: screenRecording
         )
     }
 
