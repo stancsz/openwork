@@ -82,117 +82,86 @@ function getComputerUseMcpCommand() {
   return ["npx", "-y", "@openwork/handsfree", "mcp"];
 }
 
-async function checkComputerUsePermissions() {
-  // Single fast probe with no launch. Returns appRunning:false if helper is offline.
-  return computerUsePermissionFetch("/status", { timeoutMs: 700 });
-}
+// ---------------------------------------------------------------------------
+// Permission checks — spawn the binary with --check, read stdout, done.
+// Fresh process = fresh TCC read = always accurate. No HTTP server needed.
+// ---------------------------------------------------------------------------
 
-async function launchAndQueryComputerUsePermissions(route, method = "GET") {
-  // --- Resolve the binary to launch ---
+function resolveComputerUseExecutable() {
+  // 1. Explicit env override.
+  const explicit = process.env.OPENWORK_COMPUTER_USE_BINARY?.trim();
+  if (explicit && existsSync(explicit)) return explicit;
+
+  // 2. .app bundle (packaged builds + pnpm dev).
   const appPath = computerUseHelperAppPath();
-  const execPath = appPath
-    ? path.join(appPath, "Contents", "MacOS", COMPUTER_USE_HELPER_EXECUTABLE)
-    : computerUseHelperDevBinaryPath();
-
-  if (!execPath) {
-    const msg =
-      "OpenWork Computer Use helper app is not found. " +
-      "Run `pnpm dev` once so the Swift helper app is built, then try again.";
-    console.error("[ComputerUse]", msg);
-    throw new Error(msg);
+  if (appPath) {
+    const bin = path.join(appPath, "Contents", "MacOS", COMPUTER_USE_HELPER_EXECUTABLE);
+    if (existsSync(bin)) return bin;
   }
 
-  console.log("[ComputerUse] launching helper:", execPath);
-
-  // --- Launch ---
-  // Use spawn directly on the binary rather than shell.openPath so we get real
-  // error feedback. The binary with no arguments runs the permission-setup GUI.
-  const child = spawn(execPath, [], {
-    detached: true,
-    stdio: "ignore",
-    env: process.env,
-  });
-  child.unref();
-
-  child.on("error", (err) => {
-    console.error("[ComputerUse] helper launch error:", err.message);
-  });
-
-  // --- Wait for the HTTP server to bind (Swift AppKit startup ~0.5-1.5 s) ---
-  await new Promise((resolve) => setTimeout(resolve, 1_000));
-
-  // --- Poll until responsive, up to ~6 seconds ---
-  let lastResult = { ok: false, accessibility: false, screenRecording: false, appRunning: false };
-  for (let i = 0; i < 20; i += 1) {
-    const result = await computerUsePermissionFetch(route, { method, timeoutMs: 1_200 });
-    if (result.appRunning) {
-      console.log("[ComputerUse] helper responded on attempt", i + 1);
-      return result;
+  // 3. Dev fallback — raw Swift build output.
+  if (!app.isPackaged) {
+    const swiftPkg = path.resolve(__dirname, "../../..", "packages/handsfree/native/HandsFree");
+    const devCandidates = [
+      path.join(swiftPkg, ".build", "release", "HandsFreeComputerUse"),
+      path.join(swiftPkg, ".build", "arm64-apple-macosx", "release", "HandsFreeComputerUse"),
+      path.join(swiftPkg, ".build", "debug", "HandsFreeComputerUse"),
+      path.join(swiftPkg, ".build", "arm64-apple-macosx", "debug", "HandsFreeComputerUse"),
+    ];
+    for (const c of devCandidates) {
+      if (existsSync(c)) return c;
     }
-    lastResult = result;
-    await new Promise((resolve) => setTimeout(resolve, 300));
   }
 
-  console.error("[ComputerUse] helper did not respond after 20 attempts");
-  throw new Error(
-    "OpenWork Computer Use opened but did not respond. " +
-    "Try running `pnpm dev` to rebuild the helper, then try again."
-  );
+  return null;
 }
 
-function computerUseHelperDevBinaryPath() {
-  if (app.isPackaged) return null;
-  // Locations where the Swift binary might exist after a local build.
-  const swiftPkg = path.resolve(__dirname, "../../..", "packages/handsfree/native/HandsFree");
-  const candidates = [
-    path.join(swiftPkg, ".build", "release", "HandsFreeComputerUse"),
-    path.join(swiftPkg, ".build", "arm64-apple-macosx", "release", "HandsFreeComputerUse"),
-    path.join(swiftPkg, ".build", "debug", "HandsFreeComputerUse"),
-    path.join(swiftPkg, ".build", "arm64-apple-macosx", "debug", "HandsFreeComputerUse"),
-    process.env.OPENWORK_COMPUTER_USE_BINARY?.trim(),
-  ].filter(Boolean);
-  return candidates.find((c) => existsSync(c)) ?? null;
+async function checkComputerUsePermissions() {
+  // Spawn binary --check → read JSON from stdout → exit. Always fresh.
+  const bin = resolveComputerUseExecutable();
+  if (!bin) {
+    return { ok: false, accessibility: false, screenRecording: false, error: "Helper binary not found. Run pnpm dev to build it." };
+  }
+  return spawnCheckPermissions(bin);
 }
 
-async function computerUsePermissionFetch(route, options = {}) {
-  const controller = new AbortController();
-  const tid = setTimeout(() => controller.abort(), options.timeoutMs ?? 1_000);
-  try {
-    const response = await fetch(`http://127.0.0.1:49731${route}`, {
-      method: options.method ?? "GET",
-      signal: controller.signal,
+function spawnCheckPermissions(bin) {
+  return new Promise((resolve) => {
+    let stdout = "";
+    const child = spawn(bin, ["--check"], { stdio: ["ignore", "pipe", "ignore"], timeout: 5_000 });
+    child.stdout.setEncoding("utf8");
+    child.stdout.on("data", (chunk) => { stdout += chunk; });
+    child.on("error", () => resolve({ ok: false, accessibility: false, screenRecording: false, error: "Failed to run permission check." }));
+    child.on("close", () => {
+      try {
+        const parsed = JSON.parse(stdout.trim());
+        resolve({
+          ok: parsed?.ok === true,
+          accessibility: parsed?.accessibility === true,
+          screenRecording: parsed?.screenRecording === true,
+        });
+      } catch {
+        resolve({ ok: false, accessibility: false, screenRecording: false, error: "Permission check returned invalid output." });
+      }
     });
-    const parsed = await response.json();
-    return {
-      ok: parsed?.ok === true,
-      accessibility: parsed?.accessibility === true,
-      screenRecording: parsed?.screenRecording === true,
-      appRunning: true,
-      error: typeof parsed?.error === "string" ? parsed.error : undefined,
-    };
-  } catch {
-    return { ok: false, accessibility: false, screenRecording: false, appRunning: false };
-  } finally {
-    clearTimeout(tid);
-  }
+  });
 }
 
-// Legacy path used by openComputerUsePermissionSettings.
-async function computerUsePermissionAppRequest(route, options = {}) {
-  if (options.launch !== false) {
-    await shell.openPath(computerUseHelperAppPath() ?? "");
+async function openComputerUseSetupApp() {
+  // Open the GUI. Use the .app bundle if available so macOS shows it as
+  // a real app with its own dock icon and permission identity.
+  const appPath = computerUseHelperAppPath();
+  if (appPath) {
+    const result = await shell.openPath(appPath);
+    if (result) console.error("[ComputerUse] shell.openPath error:", result);
+    return;
   }
-  let lastError;
-  const attempts = options.launch === false ? 1 : 12;
-  for (let attempt = 0; attempt < attempts; attempt += 1) {
-    try {
-      return await computerUsePermissionFetch(route, { method: options.method ?? "GET", timeoutMs: 1_000 });
-    } catch (err) {
-      lastError = err;
-      await new Promise((resolve) => setTimeout(resolve, 250));
-    }
-  }
-  return { ok: false, accessibility: false, screenRecording: false, appRunning: false };
+
+  // Fallback: spawn the raw binary (opens the same GUI).
+  const bin = resolveComputerUseExecutable();
+  if (!bin) throw new Error("Helper binary not found. Run pnpm dev to build it.");
+  const child = spawn(bin, [], { detached: true, stdio: "ignore" });
+  child.unref();
 }
 
 // Production Electron shares the same on-disk state folder as the Tauri shell
@@ -2470,16 +2439,19 @@ async function handleDesktopInvoke(event, command, ...args) {
       return getComputerUseMcpCommand();
     }
     case "checkComputerUsePermissions": {
+      // Spawn --check → fresh TCC read → always accurate.
       return checkComputerUsePermissions();
     }
     case "openComputerUsePermissionSetup": {
-      // Launch the helper app, wait for it to start, then return live status.
-      return launchAndQueryComputerUsePermissions("/status");
+      // Open the GUI app. Returns immediately — React shows "verify" CTA.
+      await openComputerUseSetupApp();
+      // Return a fresh check so the UI shows the current state.
+      return checkComputerUsePermissions();
     }
     case "openComputerUsePermissionSettings": {
-      const target = String(args[0] ?? "accessibility");
-      const route = target === "screenRecording" ? "/request/screen-recording" : "/request/accessibility";
-      return launchAndQueryComputerUsePermissions(route, "POST");
+      // Legacy: open the setup app (same as above).
+      await openComputerUseSetupApp();
+      return checkComputerUsePermissions();
     }
     case "getOpenworkUiMcpEnvironment": {
       return {

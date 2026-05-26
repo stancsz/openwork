@@ -1,7 +1,9 @@
 /// Computer Use: semantic AX and background-safe macOS computer use.
 ///
-/// The runtime is MCP-independent. This binary exposes it over a small stdio
-/// adapter because existing agent clients already speak MCP.
+/// Three modes:
+///   mcp       — run the MCP server over stdio
+///   --check   — print permission status as JSON to stdout and exit
+///   (default) — open the permission setup GUI
 
 import AppKit
 import Foundation
@@ -9,14 +11,23 @@ import Foundation
 setbuf(stdout, nil)
 
 let args = CommandLine.arguments
-if args.count >= 2 && args[1] == "mcp" {
+let subcommand = args.count >= 2 ? args[1] : ""
+
+switch subcommand {
+case "mcp":
     if ProcessInfo.processInfo.environment["OPENWORK_COMPUTER_USE_CURSOR_OVERLAY"] == "0" {
         let server = MCPServer()
         await server.run()
     } else {
         await runMCPServerWithOverlay()
     }
-} else {
+case "--check":
+    // Fresh process → fresh TCC read → always accurate.
+    let status = ComputerUsePermissions.status()
+    let json = "{\"ok\":\(status.ok),\"accessibility\":\(status.accessibility),\"screenRecording\":\(status.screenRecording)}"
+    print(json)
+    exit(0)
+default:
     await runPermissionSetupApp()
 }
 
