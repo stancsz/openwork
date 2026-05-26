@@ -293,10 +293,7 @@ actor MCPServer {
     }
 
     private func checkPermissions() -> [String: Any] {
-        let accessibilityOptions = [kAXTrustedCheckOptionPrompt.takeUnretainedValue() as String: true] as CFDictionary
-        let accessibility = AXIsProcessTrustedWithOptions(accessibilityOptions)
-        let screenRecording = CGPreflightScreenCaptureAccess()
-        return ["ok": true, "accessibility": accessibility, "screenRecording": screenRecording]
+        ComputerUsePermissions.status().dictionary
     }
 
     private func handleActivateApp(args: [String: Any]) -> [String: Any] {

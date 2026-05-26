@@ -17,8 +17,7 @@ if args.count >= 2 && args[1] == "mcp" {
         await runMCPServerWithOverlay()
     }
 } else {
-    fputs("Usage: Computer Use mcp\n", stderr)
-    exit(1)
+    await runPermissionSetupApp()
 }
 
 @MainActor
@@ -31,5 +30,13 @@ func runMCPServerWithOverlay() async {
             NSApplication.shared.terminate(nil)
         }
     }
+    NSApplication.shared.run()
+}
+
+@MainActor
+func runPermissionSetupApp() async {
+    NSApplication.shared.setActivationPolicy(.regular)
+    let appDelegate = PermissionSetupAppDelegate()
+    NSApplication.shared.delegate = appDelegate
     NSApplication.shared.run()
 }

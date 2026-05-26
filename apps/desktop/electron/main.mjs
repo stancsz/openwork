@@ -47,15 +47,22 @@ const COMPUTER_USE_HELPER_APP_NAME = "Computer Use.app";
 const COMPUTER_USE_HELPER_EXECUTABLE = "ComputerUse";
 
 function computerUseHelperExecutablePath() {
+  const appPath = computerUseHelperAppPath();
   const explicitBinary = process.env.OPENWORK_COMPUTER_USE_BINARY?.trim();
-  const explicitApp = process.env.OPENWORK_COMPUTER_USE_APP?.trim();
   const candidates = [
     explicitBinary,
-    explicitApp ? path.join(explicitApp, "Contents", "MacOS", COMPUTER_USE_HELPER_EXECUTABLE) : null,
-    process.resourcesPath
-      ? path.join(process.resourcesPath, "helpers", COMPUTER_USE_HELPER_APP_NAME, "Contents", "MacOS", COMPUTER_USE_HELPER_EXECUTABLE)
-      : null,
-    path.resolve(__dirname, "..", "resources", "helpers", COMPUTER_USE_HELPER_APP_NAME, "Contents", "MacOS", COMPUTER_USE_HELPER_EXECUTABLE),
+    appPath ? path.join(appPath, "Contents", "MacOS", COMPUTER_USE_HELPER_EXECUTABLE) : null,
+  ].filter(Boolean);
+
+  return candidates.find((candidate) => existsSync(candidate)) ?? null;
+}
+
+function computerUseHelperAppPath() {
+  const explicitApp = process.env.OPENWORK_COMPUTER_USE_APP?.trim();
+  const candidates = [
+    explicitApp,
+    process.resourcesPath ? path.join(process.resourcesPath, "helpers", COMPUTER_USE_HELPER_APP_NAME) : null,
+    path.resolve(__dirname, "..", "resources", "helpers", COMPUTER_USE_HELPER_APP_NAME),
   ].filter(Boolean);
 
   return candidates.find((candidate) => existsSync(candidate)) ?? null;
@@ -75,111 +82,50 @@ function getComputerUseMcpCommand() {
   return ["npx", "-y", "@openwork/handsfree", "mcp"];
 }
 
-function callComputerUseMcpTool(name, args = {}) {
-  const [command, ...commandArgs] = getComputerUseMcpCommand();
-  return new Promise((resolve, reject) => {
-    const child = spawn(command, commandArgs, {
-      stdio: ["pipe", "pipe", "pipe"],
-      env: process.env,
-    });
-    let stdoutBuffer = "";
-    let stderr = "";
-    let settled = false;
-
-    const cleanup = () => {
-      clearTimeout(timeout);
-      child.kill();
-    };
-
-    const fail = (error) => {
-      if (settled) return;
-      settled = true;
-      cleanup();
-      reject(error);
-    };
-
-    const finish = (response) => {
-      if (settled) return;
-      settled = true;
-      cleanup();
-      resolve(response);
-    };
-
-    const timeout = setTimeout(() => {
-      fail(new Error(`Computer Use MCP ${name} timed out.${stderr.trim() ? ` ${stderr.trim()}` : ""}`));
-    }, 45_000);
-
-    child.stdout.setEncoding("utf8");
-    child.stdout.on("data", (chunk) => {
-      stdoutBuffer += chunk;
-      for (;;) {
-        const newlineIndex = stdoutBuffer.indexOf("\n");
-        if (newlineIndex === -1) break;
-        const line = stdoutBuffer.slice(0, newlineIndex).trim();
-        stdoutBuffer = stdoutBuffer.slice(newlineIndex + 1);
-        if (!line) continue;
-        try {
-          const response = JSON.parse(line);
-          if (response.id === 2) {
-            finish(response);
-            return;
-          }
-        } catch {
-          // Package managers can write progress lines; ignore non-JSON stdout.
-        }
-      }
-    });
-
-    child.stderr.setEncoding("utf8");
-    child.stderr.on("data", (chunk) => {
-      stderr += chunk;
-    });
-
-    child.on("error", fail);
-    child.on("exit", (code) => {
-      if (!settled && code !== 0) {
-        fail(new Error(stderr.trim() || `Computer Use MCP exited with status ${code ?? "unknown"}.`));
-      }
-    });
-
-    child.stdin.write(`${JSON.stringify({ jsonrpc: "2.0", id: 1, method: "initialize", params: {} })}\n`);
-    child.stdin.write(`${JSON.stringify({ jsonrpc: "2.0", method: "notifications/initialized" })}\n`);
-    child.stdin.write(`${JSON.stringify({ jsonrpc: "2.0", id: 2, method: "tools/call", params: { name, arguments: args } })}\n`);
-  });
-}
-
-function computerUseToolText(response) {
-  const content = response?.result?.content;
-  if (!Array.isArray(content)) return "";
-  const textPart = content.find((part) => part?.type === "text" && typeof part.text === "string");
-  return textPart?.text ?? "";
-}
-
 async function checkComputerUsePermissions() {
-  const response = await callComputerUseMcpTool("check_permissions");
-  const text = computerUseToolText(response);
-  try {
-    const parsed = JSON.parse(text);
-    return {
-      ok: parsed?.ok === true,
-      accessibility: parsed?.accessibility === true,
-      screenRecording: parsed?.screenRecording === true,
-    };
-  } catch {
-    return {
-      ok: false,
-      accessibility: false,
-      screenRecording: false,
-      error: text || "Computer Use permission check returned an unreadable response.",
-    };
-  }
+  return computerUsePermissionAppRequest("/status", { launch: false });
 }
 
-function computerUsePermissionSettingsUrl(target) {
-  if (target === "screenRecording") {
-    return "x-apple.systempreferences:com.apple.preference.security?Privacy_ScreenCapture";
+async function computerUsePermissionAppRequest(route, options = {}) {
+  if (options.launch !== false) {
+    await ensureComputerUsePermissionApp();
   }
-  return "x-apple.systempreferences:com.apple.preference.security?Privacy_Accessibility";
+
+  let lastError;
+  const attempts = options.launch === false ? 1 : 12;
+  for (let attempt = 0; attempt < attempts; attempt += 1) {
+    const controller = new AbortController();
+    const timeout = setTimeout(() => controller.abort(), 1_000);
+    try {
+      const response = await fetch(`http://127.0.0.1:49731${route}`, {
+        method: options.method ?? "GET",
+        signal: controller.signal,
+      });
+      const parsed = await response.json();
+      return {
+        ok: parsed?.ok === true,
+        accessibility: parsed?.accessibility === true,
+        screenRecording: parsed?.screenRecording === true,
+        error: typeof parsed?.error === "string" ? parsed.error : undefined,
+      };
+    } catch (error) {
+      lastError = error;
+      await new Promise((resolve) => setTimeout(resolve, 250));
+    } finally {
+      clearTimeout(timeout);
+    }
+  }
+
+  if (options.launch === false) {
+    return { ok: false, accessibility: false, screenRecording: false, error: undefined };
+  }
+  throw lastError ?? new Error("Computer Use permission app did not respond.");
+}
+
+async function ensureComputerUsePermissionApp() {
+  const appPath = computerUseHelperAppPath();
+  if (!appPath) throw new Error("Computer Use helper app is missing from this OpenWork build.");
+  await shell.openPath(appPath);
 }
 
 // Production Electron shares the same on-disk state folder as the Tauri shell
@@ -2461,8 +2407,8 @@ async function handleDesktopInvoke(event, command, ...args) {
     }
     case "openComputerUsePermissionSettings": {
       const target = String(args[0] ?? "accessibility");
-      await shell.openExternal(computerUsePermissionSettingsUrl(target));
-      return { ok: true };
+      const route = target === "screenRecording" ? "/request/screen-recording" : "/request/accessibility";
+      return computerUsePermissionAppRequest(route, { method: "POST" });
     }
     case "getOpenworkUiMcpEnvironment": {
       return {

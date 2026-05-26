@@ -117,8 +117,10 @@ export function ComputerUseConfig(props: ComputerUseConfigProps) {
 
     setError(null);
     try {
-      await desktopBridge.openComputerUsePermissionSettings(target);
-      setHint("Enable Computer Use in macOS Privacy settings. If it is already enabled, toggle it off and on, restart OpenWork, then click Verify permissions.");
+      const result = await desktopBridge.openComputerUsePermissionSettings(target);
+      const next = normalizePermissionStatus(result);
+      setPermissions(next);
+      setHint("The Computer Use helper app is open. Grant the requested permission there, then click Verify permissions.");
     } catch (caught) {
       setError(errorMessage(caught));
     }
@@ -165,7 +167,7 @@ export function ComputerUseConfig(props: ComputerUseConfigProps) {
 
         <SetupRow
           title="2. Grant macOS permissions"
-          description="Computer Use needs Accessibility for semantic UI actions and Screen Recording for snapshots."
+          description="Computer Use needs Accessibility for semantic UI actions and Screen Recording for snapshots. Open the helper app to grant them."
           complete={allPermissionsGranted}
         >
           <div className="flex flex-col gap-2">
@@ -242,7 +244,7 @@ function PermissionRow(props: { label: string; granted: boolean; unknown: boolea
         </span>
       </div>
       <Button variant="outline" size="sm" onClick={props.onOpen}>
-        Open settings
+        Setup permission
       </Button>
     </div>
   );
