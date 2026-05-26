@@ -43,7 +43,7 @@ const RELEASE_DOWNLOAD_BASE_URL = "https://github.com/different-ai/openwork/rele
 const RELEASE_PAGE_URL = "https://github.com/different-ai/openwork/releases/latest";
 const DOCS_PAGE_URL = "https://openworklabs.com/docs";
 const BROWSER_PLUGIN = "opencode-chrome-devtools";
-const COMPUTER_USE_HELPER_APP_NAME = "Computer Use.app";
+const COMPUTER_USE_HELPER_APP_NAME = "OpenWork Computer Use.app";
 const COMPUTER_USE_HELPER_EXECUTABLE = "ComputerUse";
 
 function computerUseHelperExecutablePath() {
@@ -73,7 +73,7 @@ function getComputerUseMcpCommand() {
   if (helperExecutable) return [helperExecutable, "mcp"];
 
   if (app.isPackaged) {
-    throw new Error("Computer Use helper app is missing from this OpenWork build.");
+    throw new Error("OpenWork Computer Use is missing from this OpenWork build.");
   }
 
   if (process.env.OPENWORK_DEV_MODE === "1") {
@@ -119,12 +119,12 @@ async function computerUsePermissionAppRequest(route, options = {}) {
   if (options.launch === false) {
     return { ok: false, accessibility: false, screenRecording: false, error: undefined };
   }
-  throw lastError ?? new Error("Computer Use permission app did not respond.");
+    throw lastError ?? new Error("OpenWork Computer Use did not respond.");
 }
 
 async function ensureComputerUsePermissionApp() {
   const appPath = computerUseHelperAppPath();
-  if (!appPath) throw new Error("Computer Use helper app is missing from this OpenWork build.");
+  if (!appPath) throw new Error("OpenWork Computer Use is missing from this OpenWork build.");
   await shell.openPath(appPath);
 }
 
@@ -2407,6 +2407,11 @@ async function handleDesktopInvoke(event, command, ...args) {
     }
     case "openComputerUsePermissionSetup": {
       return computerUsePermissionAppRequest("/status");
+    }
+    case "relaunchOpenWork": {
+      app.relaunch();
+      app.exit(0);
+      return { ok: true };
     }
     case "openComputerUsePermissionSettings": {
       const target = String(args[0] ?? "accessibility");

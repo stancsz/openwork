@@ -16,8 +16,6 @@ import {
 } from "@/components/ui/card";
 import { registerExtensionConfig } from "./extension-registry";
 
-type PermissionTarget = "accessibility" | "screenRecording";
-
 type ComputerUsePermissionStatus = {
   ok: boolean;
   accessibility: boolean;
@@ -109,23 +107,6 @@ export function ComputerUseConfig(props: ComputerUseConfigProps) {
     void refreshPermissions();
   }, [refreshPermissions]);
 
-  const openPermissionSettings = async (target: PermissionTarget) => {
-    if (!hasDesktopBridge()) {
-      setError("OpenWork desktop is required to open macOS Privacy settings.");
-      return;
-    }
-
-    setError(null);
-    try {
-      const result = await desktopBridge.openComputerUsePermissionSettings(target);
-      const next = normalizePermissionStatus(result);
-      setPermissions(next);
-      setHint("The Computer Use helper app is open. Grant the requested permission there, then click Verify permissions.");
-    } catch (caught) {
-      setError(errorMessage(caught));
-    }
-  };
-
   const openPermissionHelper = async () => {
     if (!hasDesktopBridge()) {
       setError("OpenWork desktop is required to open the Computer Use app.");
@@ -137,7 +118,21 @@ export function ComputerUseConfig(props: ComputerUseConfigProps) {
       const result = await desktopBridge.openComputerUsePermissionSetup();
       const next = normalizePermissionStatus(result);
       setPermissions(next);
-      setHint("The Computer Use app is open. Use it to grant Accessibility and Screen Recording, then come back and verify.");
+      setHint("OpenWork Computer Use is open. Grant both permissions there, then come back and verify.");
+    } catch (caught) {
+      setError(errorMessage(caught));
+    }
+  };
+
+  const relaunchOpenWork = async () => {
+    if (!hasDesktopBridge()) {
+      setError("OpenWork desktop is required to relaunch.");
+      return;
+    }
+
+    setError(null);
+    try {
+      await desktopBridge.relaunchOpenWork();
     } catch (caught) {
       setError(errorMessage(caught));
     }
@@ -176,7 +171,7 @@ export function ComputerUseConfig(props: ComputerUseConfigProps) {
           description="Adds the local Computer Use server to this workspace so Composer can use the computer-control tools."
           complete={props.connected}
         >
-          <Button onClick={() => void props.onConnect?.()} disabled={!props.onConnect || props.connected || props.connecting}>
+          <Button className="w-full sm:w-auto" onClick={() => void props.onConnect?.()} disabled={!props.onConnect || props.connected || props.connecting}>
             {props.connecting ? <Loader2 className="size-4 animate-spin" /> : null}
             {props.connected ? "MCP configured" : props.connecting ? "Connecting..." : "Connect MCP"}
           </Button>
@@ -184,7 +179,7 @@ export function ComputerUseConfig(props: ComputerUseConfigProps) {
 
         <SetupRow
           title="2. Grant macOS permissions"
-          description="Open the separate Computer Use app. macOS grants permissions to that app, not to OpenWork."
+          description="Open the separate OpenWork Computer Use app. macOS grants permissions to that app, not to OpenWork."
           complete={allPermissionsGranted}
         >
           <div className="flex w-full min-w-0 flex-col gap-3">
@@ -192,33 +187,25 @@ export function ComputerUseConfig(props: ComputerUseConfigProps) {
               <PermissionStatus label="Accessibility" granted={permissions?.accessibility === true} unknown={!permissions} />
               <PermissionStatus label="Screen Recording" granted={permissions?.screenRecording === true} unknown={!permissions} />
             </div>
-            <Button className="w-full justify-center" onClick={() => void openPermissionHelper()}>
+            <Button className="min-h-10 w-full justify-center" onClick={() => void (allPermissionsGranted ? relaunchOpenWork() : openPermissionHelper())}>
               <Settings2 className="size-4" />
-              Open Computer Use app
+              {allPermissionsGranted ? "Relaunch OpenWork" : "Grant permissions"}
             </Button>
-            <div className="grid gap-2 sm:grid-cols-2">
-              <Button variant="outline" size="sm" onClick={() => void openPermissionSettings("accessibility")}>
-                Request Accessibility
-              </Button>
-              <Button variant="outline" size="sm" onClick={() => void openPermissionSettings("screenRecording")}>
-                Request Screen Recording
-              </Button>
-            </div>
           </div>
         </SetupRow>
       </CardContent>
       <CardFooter className="border-t border-border">
-        <div className="flex w-full flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
+        <div className="flex w-full flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
           <div className="text-xs text-muted-foreground">
             {allPermissionsGranted ? "Permissions verified. Try a Composer prompt that asks Computer Use to open an app and type." : "After granting permissions, return here and verify again."}
           </div>
-          <div className="flex gap-2">
+          <div className="flex w-full flex-col gap-2 sm:w-auto sm:flex-row">
             {props.onRefresh ? (
-              <Button variant="outline" onClick={() => void props.onRefresh?.()}>
+              <Button className="w-full sm:w-auto" variant="outline" onClick={() => void props.onRefresh?.()}>
                 Refresh MCP
               </Button>
             ) : null}
-            <Button onClick={() => void refreshPermissions()} disabled={checking}>
+            <Button className="w-full sm:w-auto" onClick={() => void refreshPermissions()} disabled={checking}>
               {checking ? <Loader2 className="size-4 animate-spin" /> : null}
               Verify permissions
             </Button>
@@ -240,7 +227,7 @@ function SetupRow(props: { title: string; description: string; complete: boolean
             <div className="mt-1 text-xs leading-relaxed text-muted-foreground">{props.description}</div>
           </div>
         </div>
-        <div className="w-full min-w-0 sm:w-[min(24rem,45%)]">{props.children}</div>
+        <div className="w-full min-w-0 sm:w-[min(22rem,44%)]">{props.children}</div>
       </div>
     </div>
   );
@@ -251,7 +238,7 @@ function PermissionStatus(props: { label: string; granted: boolean; unknown: boo
     <div className="flex min-w-0 items-center justify-between gap-2 rounded-lg border border-border bg-muted/40 px-3 py-2">
       <div className="flex items-center gap-2 text-sm">
         <StatusIcon complete={props.granted} muted={props.unknown} />
-        <span>{props.label}</span>
+        <span className="truncate">{props.label}</span>
       </div>
       <span className={`shrink-0 text-xs font-medium ${props.granted ? "text-green-11" : "text-amber-11"}`}>
         {props.unknown ? "Check" : props.granted ? "Granted" : "Needed"}

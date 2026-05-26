@@ -73,16 +73,17 @@ final class PermissionSetupAppDelegate: NSObject, NSApplicationDelegate {
 final class PermissionSetupWindowController: NSWindowController {
     private let accessibilityStatus = NSTextField(labelWithString: "")
     private let screenRecordingStatus = NSTextField(labelWithString: "")
+    private let footerLabel = NSTextField(wrappingLabelWithString: "")
     private var timer: Timer?
 
     init() {
         let window = NSWindow(
-            contentRect: NSRect(x: 0, y: 0, width: 520, height: 400),
+            contentRect: NSRect(x: 0, y: 0, width: 580, height: 540),
             styleMask: [.titled, .closable, .miniaturizable],
             backing: .buffered,
             defer: false
         )
-        window.title = "Computer Use Setup"
+        window.title = "OpenWork Computer Use"
         window.center()
         super.init(window: window)
         window.contentView = makeContentView()
@@ -105,11 +106,23 @@ final class PermissionSetupWindowController: NSWindowController {
         root.wantsLayer = true
         root.layer?.backgroundColor = NSColor.windowBackgroundColor.cgColor
 
-        let title = NSTextField(labelWithString: "Enable Computer Use")
+        let icon = DraggableAppIconView(frame: NSRect(x: 0, y: 0, width: 84, height: 84))
+        icon.image = NSApplication.shared.applicationIconImage
+        icon.imageScaling = .scaleProportionallyUpOrDown
+        icon.translatesAutoresizingMaskIntoConstraints = false
+        icon.widthAnchor.constraint(equalToConstant: 84).isActive = true
+        icon.heightAnchor.constraint(equalToConstant: 84).isActive = true
+
+        let iconHint = NSTextField(labelWithString: "Drag this icon into Screen Recording if macOS does not list the app.")
+        iconHint.font = .systemFont(ofSize: 12)
+        iconHint.textColor = .secondaryLabelColor
+        iconHint.alignment = .center
+
+        let title = NSTextField(labelWithString: "OpenWork Computer Use")
         title.font = .systemFont(ofSize: 26, weight: .semibold)
         title.alignment = .center
 
-        let subtitle = NSTextField(wrappingLabelWithString: "OpenWork uses this helper app to request and verify macOS permissions. Grant both permissions, then return to OpenWork.")
+        let subtitle = NSTextField(wrappingLabelWithString: "Grant Accessibility and Screen Recording to this app. After both are granted, relaunch OpenWork so macOS applies the new permissions cleanly.")
         subtitle.font = .systemFont(ofSize: 14)
         subtitle.textColor = .secondaryLabelColor
         subtitle.alignment = .center
@@ -122,16 +135,28 @@ final class PermissionSetupWindowController: NSWindowController {
         )
         let screenRecordingRow = permissionRow(
             title: "Screen Recording",
-            body: "Allows snapshots so agents can understand what is on screen.",
+            body: "Allows snapshots so agents can understand what is on screen. If macOS opens Privacy & Security, enable OpenWork Computer Use. If it is not listed, drag the app icon above into Screen Recording.",
             statusLabel: screenRecordingStatus,
             action: #selector(requestScreenRecording)
         )
 
-        let stack = NSStackView(views: [title, subtitle, accessibilityRow, screenRecordingRow])
+        footerLabel.font = .systemFont(ofSize: 13)
+        footerLabel.textColor = .secondaryLabelColor
+        footerLabel.alignment = .center
+
+        let doneButton = NSButton(title: "Done", target: self, action: #selector(done))
+        doneButton.bezelStyle = .rounded
+        doneButton.controlSize = .large
+
+        let stack = NSStackView(views: [icon, iconHint, title, subtitle, accessibilityRow, screenRecordingRow, footerLabel, doneButton])
         stack.orientation = .vertical
-        stack.spacing = 18
-        stack.alignment = .leading
+        stack.spacing = 16
+        stack.alignment = .centerX
         stack.translatesAutoresizingMaskIntoConstraints = false
+
+        accessibilityRow.widthAnchor.constraint(equalTo: stack.widthAnchor).isActive = true
+        screenRecordingRow.widthAnchor.constraint(equalTo: stack.widthAnchor).isActive = true
+        footerLabel.widthAnchor.constraint(equalTo: stack.widthAnchor).isActive = true
 
         root.addSubview(stack)
         NSLayoutConstraint.activate([
@@ -176,7 +201,7 @@ final class PermissionSetupWindowController: NSWindowController {
         container.contentViewMargins = NSSize(width: 18, height: 14)
         container.contentView = row
         container.translatesAutoresizingMaskIntoConstraints = false
-        container.heightAnchor.constraint(greaterThanOrEqualToConstant: 108).isActive = true
+        container.heightAnchor.constraint(greaterThanOrEqualToConstant: 124).isActive = true
         return container
     }
 
@@ -184,6 +209,9 @@ final class PermissionSetupWindowController: NSWindowController {
         let status = ComputerUsePermissions.status()
         update(label: accessibilityStatus, granted: status.accessibility)
         update(label: screenRecordingStatus, granted: status.screenRecording)
+        footerLabel.stringValue = status.ok
+            ? "All permissions are granted. Click Done, then relaunch OpenWork from the setup screen."
+            : "Grant both permissions here. macOS may ask you to quit and reopen apps after Screen Recording changes."
     }
 
     private func update(label: NSTextField, granted: Bool) {
@@ -199,6 +227,27 @@ final class PermissionSetupWindowController: NSWindowController {
     @objc private func requestScreenRecording() {
         ComputerUsePermissions.request(.screenRecording)
         refresh()
+    }
+
+    @objc private func done() {
+        NSApplication.shared.terminate(nil)
+    }
+}
+
+final class DraggableAppIconView: NSImageView, NSDraggingSource {
+    override func mouseDown(with event: NSEvent) {
+        let appURL = Bundle.main.bundleURL
+        guard let image else { return }
+        let pasteboardItem = NSPasteboardItem()
+        pasteboardItem.setString(appURL.absoluteString, forType: .fileURL)
+
+        let draggingItem = NSDraggingItem(pasteboardWriter: pasteboardItem)
+        draggingItem.setDraggingFrame(bounds, contents: image)
+        beginDraggingSession(with: [draggingItem], event: event, source: self)
+    }
+
+    func draggingSession(_ session: NSDraggingSession, sourceOperationMaskFor context: NSDraggingContext) -> NSDragOperation {
+        .copy
     }
 }
 
