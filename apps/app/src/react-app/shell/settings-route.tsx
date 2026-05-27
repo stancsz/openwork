@@ -43,7 +43,8 @@ import "../domains/settings/ollama-config";
 import "../domains/settings/computer-use-config";
 import "../domains/settings/browser-extension-config";
 import "../domains/settings/openwork-voice-config";
-import { getExtensionConfigSlot, type ExtensionConfigContext } from "../domains/settings/extension-registry";
+import "../domains/settings/google-workspace-config";
+import { getExtensionConfigSlot, getExtensionConnected, type ExtensionConfigContext } from "../domains/settings/extension-registry";
 import { isOpenWorkExtensionEnabled } from "../domains/settings/extension-state";
 import { PreferencesView } from "../domains/settings/pages/preferences-view";
 import { ShellCustomizationView } from "../domains/settings/pages/shell-view";
@@ -524,6 +525,7 @@ function SettingsRouteContent(props: SettingsSurfaceProps = {}) {
   const [localProviderStatus, setLocalProviderStatus] = useState<string | null>(null);
   const [localProviderError, setLocalProviderError] = useState<string | null>(null);
   const [imageExtensionInstalled, setImageExtensionInstalled] = useState(false);
+  const [googleWorkspaceConnected, setGoogleWorkspaceConnected] = useState(false);
   const [imageExtensionBusy, setImageExtensionBusy] = useState(false);
   const [imageExtensionStatus, setImageExtensionStatus] = useState<string | null>(null);
   const [imageExtensionError, setImageExtensionError] = useState<string | null>(null);
@@ -922,6 +924,27 @@ function SettingsRouteContent(props: SettingsSurfaceProps = {}) {
       cancelled = true;
     };
   }, [openworkClient, runtimeWorkspaceId, selectedWorkspaceEndpoint]);
+
+  useEffect(() => {
+    const client = selectedWorkspaceEndpoint?.client ?? openworkClient;
+    if (!client) {
+      setGoogleWorkspaceConnected(false);
+      return;
+    }
+
+    let cancelled = false;
+    void client.googleWorkspaceStatus()
+      .then((result) => {
+        if (!cancelled) setGoogleWorkspaceConnected(result.connected === true);
+      })
+      .catch(() => {
+        if (!cancelled) setGoogleWorkspaceConnected(false);
+      });
+
+    return () => {
+      cancelled = true;
+    };
+  }, [openworkClient, selectedWorkspaceEndpoint]);
 
   useEffect(() => {
     if (!openworkClient) {
@@ -2087,6 +2110,13 @@ function SettingsRouteContent(props: SettingsSurfaceProps = {}) {
                   void connectionsStore.connectMcp(entry);
                 }}
                 configSlotForEntry={(entry) => getExtensionConfigSlot(entry, {
+                  openworkServerClient: selectedWorkspaceEndpoint?.client ?? openworkClient,
+                  extensionConnections: {
+                    "google-workspace": googleWorkspaceConnected,
+                  },
+                  onExtensionConnectionChange: (extensionId, connected) => {
+                    if (extensionId === "google-workspace") setGoogleWorkspaceConnected(connected);
+                  },
                   computerUse: {
                     connected: connectionsSnapshot.mcpServers.some((server) => server.name === "computer-use"),
                     connecting: connectionsSnapshot.mcpConnectingName === entry.name,
@@ -2121,6 +2151,13 @@ function SettingsRouteContent(props: SettingsSurfaceProps = {}) {
                   },
                 })}
                 isExtensionConnected={(entry) => {
+                  const runtimeConnected = getExtensionConnected(entry, {
+                    openworkServerClient: selectedWorkspaceEndpoint?.client ?? openworkClient,
+                    extensionConnections: {
+                      "google-workspace": googleWorkspaceConnected,
+                    },
+                  });
+                  if (runtimeConnected !== null) return runtimeConnected;
                   const id = entry.serverName ?? entry.name;
                   if (id === "openai-image-gen") return imageExtensionInstalled;
                   if (id === "ollama") return providerConnectedIds.includes("ollama");

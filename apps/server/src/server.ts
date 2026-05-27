@@ -53,6 +53,14 @@ import {
 import { createReadStream } from "node:fs";
 import { Readable } from "node:stream";
 import { serve, type ServeResult } from "./serve-node.js";
+import {
+  createGoogleWorkspaceConnectFlowManager,
+  googleWorkspaceDisconnect,
+  googleWorkspaceRunScopeSmokeTest,
+  googleWorkspaceStatus,
+  googleWorkspaceTestConnection,
+} from "./extensions/google-workspace.js";
+import { callExperimentalExtensionAction, listExperimentalExtensionActions } from "./extensions/index.js";
 import pkg from "../package.json" with { type: "json" };
 import constants from "../../../constants.json" with { type: "json" };
 
@@ -1402,6 +1410,7 @@ function createRoutes(
 ): Route[] {
   const routes: Route[] = [];
   const fileSessions = new FileSessionStore();
+  const googleWorkspaceConnectFlows = createGoogleWorkspaceConnectFlowManager(config);
 
   const serializeFileSession = (session: {
     id: string;
@@ -1619,6 +1628,49 @@ function createRoutes(
 
   addRoute(routes, "GET", "/capabilities", "client", async () => {
     return jsonResponse(buildCapabilities(config));
+  });
+
+  addRoute(routes, "GET", "/experimental/extensions/actions", "client", async (ctx) => {
+    const extensionId = ctx.url.searchParams.get("extensionId") ?? "";
+    return jsonResponse({
+      ok: true,
+      schemaVersion: 1,
+      actions: listExperimentalExtensionActions(extensionId),
+    });
+  });
+
+  addRoute(routes, "POST", "/experimental/extensions/call", "client", async (ctx) => {
+    if (ctx.actor?.scope === "viewer") {
+      throw new ApiError(403, "forbidden", "Viewer tokens cannot call extension actions");
+    }
+    const body = await readJsonBody(ctx.request);
+    return jsonResponse(await callExperimentalExtensionAction(config, body));
+  });
+
+  addRoute(routes, "GET", "/experimental/google-workspace/status", "client", async () => {
+    return jsonResponse(await googleWorkspaceStatus(config));
+  });
+
+  addRoute(routes, "POST", "/experimental/google-workspace/connect/start", "client", async (ctx) => {
+    if (ctx.actor?.scope === "viewer") throw new ApiError(403, "forbidden", "Viewer tokens cannot connect Google Workspace");
+    return jsonResponse(await googleWorkspaceConnectFlows.start(), 201);
+  });
+
+  addRoute(routes, "GET", "/experimental/google-workspace/connect/status/:flowId", "client", async (ctx) => {
+    return jsonResponse(await googleWorkspaceConnectFlows.status(ctx.params.flowId));
+  });
+
+  addRoute(routes, "POST", "/experimental/google-workspace/disconnect", "client", async (ctx) => {
+    if (ctx.actor?.scope === "viewer") throw new ApiError(403, "forbidden", "Viewer tokens cannot disconnect Google Workspace");
+    return jsonResponse(await googleWorkspaceDisconnect(config));
+  });
+
+  addRoute(routes, "POST", "/experimental/google-workspace/test", "client", async () => {
+    return jsonResponse(await googleWorkspaceTestConnection(config));
+  });
+
+  addRoute(routes, "POST", "/experimental/google-workspace/smoke-test", "client", async () => {
+    return jsonResponse(await googleWorkspaceRunScopeSmokeTest(config));
   });
 
   addRoute(routes, "GET", "/workspaces", "client", async () => {
