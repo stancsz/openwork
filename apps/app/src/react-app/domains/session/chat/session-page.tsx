@@ -155,6 +155,7 @@ export type SessionPageProps = {
   respondQuestion?: (requestID: string, answers: string[][]) => void;
   statusBar?: Partial<StatusBarOverrides>;
   notFoundMessage?: string | null;
+  onOpenProviderAuth?: () => void;
   onRenameSession?: (sessionId: string, title: string) => Promise<void> | void;
   onDeleteSession?: (sessionId: string) => Promise<void> | void;
   onAccessibleTargetsChange?: (targets: OpenTarget[]) => void;
@@ -849,11 +850,32 @@ export function SessionPage(props: SessionPageProps) {
                       <div className="w-full max-w-md space-y-6">
                         <div className="space-y-1 text-center">
                           <h2 className="text-lg font-semibold text-dls-text">
-                            {t("session.select_or_create_session")}
+                            {providerCount === 0
+                              ? t("session.connect_model_to_start")
+                              : t("session.select_or_create_session")}
                           </h2>
-                          <p className="text-xs text-dls-secondary">Try one of these to get started:</p>
+                          <p className="text-xs text-dls-secondary">
+                            {providerCount === 0
+                              ? "Add an AI model provider so your tasks can run."
+                              : "Try one of these to get started:"}
+                          </p>
                         </div>
                         <div className="space-y-2">
+                          {providerCount === 0 ? (
+                            <button
+                              type="button"
+                              className="flex w-full items-start gap-3 rounded-xl border border-blue-7/50 bg-blue-2/40 p-3.5 text-left transition-colors hover:bg-blue-3/50"
+                              onClick={() => props.onOpenProviderAuth?.()}
+                            >
+                              <Zap className="mt-0.5 size-5 shrink-0 text-blue-10" />
+                              <div>
+                                <div className="text-[13px] font-medium text-dls-text">Connect a model provider</div>
+                                <div className="mt-0.5 text-[11px] text-dls-secondary">
+                                  Add an API key for Anthropic, OpenAI, Google, or other providers
+                                </div>
+                              </div>
+                            </button>
+                          ) : null}
                           <button
                             type="button"
                             className="flex w-full items-start gap-3 rounded-xl border border-dls-border bg-dls-surface p-3.5 text-left transition-colors hover:bg-dls-hover"
@@ -882,7 +904,7 @@ export function SessionPage(props: SessionPageProps) {
                           >
                             <img src="/openwork-mark.svg" alt="" width={20} height={20} className="mt-0.5 shrink-0" />
                             <div>
-                              <div className="text-[13px] font-medium text-dls-text">Automate a browser task</div>
+                              <div className="text-[13px] font-medium text-dls-text">Browse the web</div>
                               <div className="mt-0.5 text-[11px] text-dls-secondary">Search Craigslist for couches and list the results</div>
                             </div>
                           </button>

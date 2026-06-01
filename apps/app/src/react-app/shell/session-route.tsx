@@ -2032,8 +2032,9 @@ export function SessionRoute() {
         }));
         setCompactModelPickerOpen(false);
       },
-      onOpenSettingsSection: (section: "commands" | "skills" | "mcps" | "plugins") => {
-        handleOpenSettings(section === "skills" ? "/settings/skills" : section === "mcps" ? "/settings/extensions/mcp" : section === "plugins" ? "/settings/extensions/plugins" : "/settings/general");
+      providerConnectedCount: providerConnectedIds.length,
+      onOpenSettingsSection: (section: "commands" | "skills" | "mcps" | "plugins" | "providers") => {
+        handleOpenSettings(section === "skills" ? "/settings/skills" : section === "mcps" ? "/settings/extensions/mcp" : section === "plugins" ? "/settings/extensions/plugins" : section === "providers" ? "/settings/ai" : "/settings/general");
       },
       onSendDraft: async (draft: ComposerDraft) => {
         const text = (draft.resolvedText ?? draft.text).trim();
@@ -2726,6 +2727,7 @@ export function SessionRoute() {
         );
       }}
       onOpenSettings={() => handleOpenSettings("/settings/general")}
+      onOpenProviderAuth={() => sessionProviderAuthStore.openProviderAuthModal()}
       providerAuthModal={sessionProviderAuthSnapshot.providerAuthModalOpen ? {
         open: true,
         loading: false,

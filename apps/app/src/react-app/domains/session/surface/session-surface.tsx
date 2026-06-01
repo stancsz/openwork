@@ -122,7 +122,8 @@ export type SessionSurfaceProps = {
   safeStringify?: (value: unknown) => string;
   onChangeModel?: (model: { providerID: string; modelID: string }) => void;
   onUploadInboxFiles?: ((files: File[], options?: { notify?: boolean }) => void | Promise<unknown>) | null;
-  onOpenSettingsSection?: ((section: "commands" | "skills" | "mcps" | "plugins") => void) | undefined;
+  providerConnectedCount?: number;
+  onOpenSettingsSection?: ((section: "commands" | "skills" | "mcps" | "plugins" | "providers") => void) | undefined;
   onRevertToMessage?: (messageId: string) => void;
   onForkAtMessage?: (messageId: string) => void;
   onOpenTarget?: (target: OpenTarget, options?: { auto?: boolean }) => void;
@@ -1232,6 +1233,7 @@ export function SessionSurface(props: SessionSurfaceProps) {
                     showThinking={showThinking}
                     developerMode={props.developerMode}
                     displaySuggestions={shellConfig.starterCards}
+                    providerConnectedCount={props.providerConnectedCount ?? 0}
                     dispatchAction={handleMessageListDispatchAction}
                     setPrompt={handleMessageListSetPrompt}
                     onRevertToUserMessage={handleRevertToUserMessage}

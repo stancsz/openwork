@@ -873,6 +873,7 @@ export default {
   "session.resize_workspace_column": "Resize workspace column",
   "session.revert_label": "Revert",
   "session.scope_label": "Scope",
+  "session.connect_model_to_start": "Connect a model to get started",
   "session.select_or_create_session": "Select or create a session to get started.",
   "session.share_collaborator_hint": "Routine remote access when you do not need owner-only actions.",
   "session.share_collaborator_host_hint": "Routine remote access to this host without owner-only actions.",

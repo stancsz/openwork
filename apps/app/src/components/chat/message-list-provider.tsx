@@ -9,6 +9,7 @@ interface MessageListContextValue {
   showThinking: boolean
   developerMode: boolean
   displaySuggestions: boolean
+  providerConnectedCount: number
   dispatchAction: (action: DispatchAction) => void
   setPrompt: (prompt: string) => void
   onRevertToUserMessage: (messageId: string) => void
@@ -26,6 +27,7 @@ interface MessageListProviderProps {
   onRevertToUserMessage: (messageId: string) => void
   onForkAtMessage: (messageId: string) => void
   displaySuggestions: boolean
+  providerConnectedCount: number
   dispatchAction: (action: DispatchAction) => void
   setPrompt: (prompt: string) => void
 }
@@ -33,7 +35,7 @@ interface MessageListProviderProps {
 export interface DispatchAction {
   target: "settings"
   action: "open"
-  section: "commands" | "skills" | "mcps" | "plugins"
+  section: "commands" | "skills" | "mcps" | "plugins" | "providers"
 }
 
 export function MessageListProvider({
@@ -43,6 +45,7 @@ export function MessageListProvider({
   showThinking,
   developerMode,
   displaySuggestions,
+  providerConnectedCount,
   dispatchAction,
   setPrompt,
   onRevertToUserMessage,
@@ -55,6 +58,7 @@ export function MessageListProvider({
       showThinking,
       developerMode,
       displaySuggestions,
+      providerConnectedCount,
       dispatchAction,
       setPrompt,
       onRevertToUserMessage,
@@ -66,6 +70,7 @@ export function MessageListProvider({
       showThinking,
       developerMode,
       displaySuggestions,
+      providerConnectedCount,
       dispatchAction,
       setPrompt,
       onRevertToUserMessage,
