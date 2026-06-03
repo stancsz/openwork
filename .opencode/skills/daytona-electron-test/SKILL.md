@@ -37,8 +37,12 @@ source every `/daytona-secrets/*.env` file before Electron starts.
 
 ## Related Daytona Skills
 
+- `daytona-flow-validator`: pass/fail validation with a strict observe -> act
+  -> observe/assert -> evidence loop.
 - `daytona-cloud-server`: Den Web/API, worker proxy, marketplace, cloud auth,
-  org policy, and two-sandbox server + Electron tests.
+  and org policy server setup.
+- `daytona-electron-den`: two-sandbox server + Electron validation.
+- `daytona-chrome-cdp`: standalone Chrome in Daytona for web sign-in and OAuth.
 - `daytona-secrets-volume`: provider keys and eval-only secrets in
   `openwork-eval-secrets:/daytona-secrets`.
 - `daytona-recording-artifacts`: screenshots, recordings, validation artifacts,
@@ -56,9 +60,9 @@ source every `/daytona-secrets/*.env` file before Electron starts.
 - **Artifacts volume:** use `openwork-eval-artifacts:/daytona-artifacts` for
   screenshots, validation notes, and recordings that survive sandbox deletion.
 
-Validation standard: prove behavior with CDP assertions first, capture a PNG
-screenshot at important states for quick AI/human review, and record MP4 video
-for end-to-end PR evidence.
+Validation standard: use `daytona-flow-validator`. Prove behavior with CDP
+assertions first, capture a PNG screenshot at important states for quick
+AI/human review, and record MP4 video for end-to-end PR evidence.
 
 When the user asks specifically about server, secrets, recordings, screenshots,
 or evidence, use the focused skill above instead of relying only on this runbook.
@@ -96,7 +100,7 @@ Should show: `[target_id] OpenWork  http://localhost:5173/#/welcome`
 ### 6. Verify it's real Electron (not plain Chromium)
 
 ```
-browser_eval({ expression: "navigator.userAgent" })
+browser_eval({ browser_url: "<CDP_URL>", target_id: "<TARGET_ID>", expression: "navigator.userAgent" })
 ```
 
 Must contain `Electron/`.
@@ -357,8 +361,9 @@ Always use two separate `daytona exec` calls with a `sleep` between them.
 
 ## Two-sandbox Den + Electron marketplace evals
 
-Use this when testing Cloud Marketplace, desktop policies, or org-managed
-extension flows end-to-end.
+Use `daytona-electron-den` when testing Cloud Marketplace, desktop policies, or
+org-managed extension flows end-to-end. Keep this section as a quick reference
+only.
 
 1. Start the Den server sandbox:
 ```bash
@@ -501,8 +506,8 @@ daytona exec "$SANDBOX" -- "bash -lc 'cd /workspace && DISPLAY=:99 .devcontainer
 
 ### Step 6: Drive the AFTER flow
 
-Use browser tools to demonstrate the new behavior. Same steps as BEFORE
-but the UI should reflect the changes.
+Use browser tools to demonstrate the new behavior. Same steps as BEFORE, but
+validate with `daytona-flow-validator` before calling the recording successful.
 
 ### Step 7: Stop the AFTER recording
 

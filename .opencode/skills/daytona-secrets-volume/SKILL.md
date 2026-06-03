@@ -23,6 +23,10 @@ The Electron starter sources every file matching:
 /daytona-secrets/*.env
 ```
 
+This is a Daytona reusable volume, not a host directory. You cannot inspect it
+directly from the local filesystem. To add, list, or test files, mount it into a
+temporary Daytona sandbox or use an existing sandbox that mounted the volume.
+
 ## Add A Secret File
 
 Create a local env file, then copy it into the volume:
@@ -40,7 +44,9 @@ bash .devcontainer/setup-daytona-secrets-volume.sh .google google.env
 ```
 
 The destination must be a simple `.env` filename such as `openai.env`. The
-script copies the file without printing it and sets restrictive permissions.
+script copies the file without printing secret values and sets restrictive
+permissions. Do not pass secrets as command-line arguments; put them in a local
+env file and pass only the filename.
 
 ## Expected Env File Shape
 
@@ -78,3 +84,13 @@ daytona exec "$SANDBOX" -- "bash -lc 'set -a; source /daytona-secrets/openai.env
 ```
 
 Never run commands that print token values.
+
+## Common Gotchas
+
+- Updating the volume does not update a running Electron process. Restart
+  Electron so `/daytona-secrets/*.env` is sourced again.
+- Server sandboxes do not automatically use Electron provider secrets unless the
+  server helper explicitly mounts and sources them.
+- `test -n "$OPENAI_API_KEY"` is safe; `env`, `printenv`, or `cat` is not.
+- Secrets in this volume are for evals only. Do not copy them into repo files or
+  workspace config unless the flow is explicitly testing UI-based provider save.

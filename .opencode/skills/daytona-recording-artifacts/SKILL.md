@@ -7,6 +7,7 @@ description: Daytona recording volume, screenshots, artifacts, and validation ev
 
 Use this skill to collect proof that a Daytona UI flow works. Recordings are for
 humans. CDP assertions and screenshots are for AI validation and fast review.
+Use `daytona-flow-validator` before declaring the flow passed.
 
 ## The Volume
 
@@ -64,6 +65,16 @@ daytona exec "$SANDBOX" -- 'bash .devcontainer/stop-daytona-recording.sh'
 
 Do not use `kill -9`; it can corrupt the file.
 
+After stopping, verify the recording exists and has duration:
+
+```bash
+daytona exec "$SANDBOX" -- 'ls -lh /daytona-artifacts/recordings'
+daytona exec "$SANDBOX" -- 'ffprobe -v error -show_entries format=duration -of default=nw=1:nk=1 /daytona-artifacts/recordings/<name>.mp4'
+```
+
+If the duration is near zero, missing, or the file is absent, the recording is
+not usable evidence.
+
 ## Get Artifact URLs
 
 Get the artifacts base URL:
@@ -102,3 +113,6 @@ Use all three layers when possible:
 Do not report success from a recording alone. The AI should inspect state with
 browser tools and use screenshots to validate visible behavior before declaring
 the flow passed.
+
+When a recording is required, start it before the first user-visible action in
+the flow and stop it only after the final asserted state is visible.

@@ -25,8 +25,11 @@ Run the OpenWork UI evaluation flows against a real Electron app. Prefer a fresh
 
 Use these Daytona skills when an eval touches a specific area:
 
-- `daytona-electron-test` for the real Electron app, CDP, noVNC, workspace creation, and UI driving.
-- `daytona-cloud-server` for Den server, cloud auth, marketplace, org policy, and worker proxy evals.
+- `daytona-electron-test` for launching and driving the real Electron app.
+- `daytona-flow-validator` for the observe -> act -> observe/assert -> evidence loop.
+- `daytona-cloud-server` for Den server sandbox startup and health checks.
+- `daytona-electron-den` for two-sandbox Electron + Den cloud flows.
+- `daytona-chrome-cdp` for standalone Chrome in Daytona, separate from Electron.
 - `daytona-secrets-volume` for adding or checking provider keys and eval secrets.
 - `daytona-recording-artifacts` for screenshots, recordings, before/after videos, and PR evidence.
 
@@ -99,20 +102,25 @@ If the app shows the Welcome page, create a workspace:
 Read the eval file from `evals/` and execute each step using the browser tools.
 
 For each step:
-1. Execute the `browser_evaluate` / `browser_click` / `browser_screenshot` call
-2. Verify the expected outcome
-3. Report pass/fail
+1. Observe the current state with `browser_snapshot` or `browser_eval`.
+2. Execute the `browser_eval`, `browser_click`, `browser_fill`, or screenshot call.
+3. Observe again.
+4. Assert the expected URL, text, state, process, log, or API result.
+5. Capture screenshot/recording evidence when the visible state matters.
+
+Use the `daytona-flow-validator` skill for pass/fail decisions. If there is no
+post-action assertion, report `Incomplete`, not `Passed`.
 
 ### Key techniques
 
 **Clicking buttons:**
 ```
-browser_evaluate({ browser_url: URL, expression: "(function() { var btns = document.querySelectorAll('button'); for (var i = 0; i < btns.length; i++) { if (btns[i].textContent.indexOf('BUTTON_TEXT') !== -1) { btns[i].click(); return 'clicked'; } } return 'not found'; })()" })
+browser_eval({ browser_url: URL, expression: "(function() { var btns = document.querySelectorAll('button'); for (var i = 0; i < btns.length; i++) { if (btns[i].textContent.indexOf('BUTTON_TEXT') !== -1) { btns[i].click(); return 'clicked'; } } return 'not found'; })()" })
 ```
 
 **Typing in Lexical editors:**
 ```
-browser_evaluate({ browser_url: URL, expression: "(function() { var e = document.querySelector('[contenteditable=true]'); e.focus(); document.execCommand('insertText', false, 'YOUR TEXT'); return 'typed'; })()" })
+browser_eval({ browser_url: URL, expression: "(function() { var e = document.querySelector('[contenteditable=true]'); e.focus(); var d = new DataTransfer(); d.setData('text/plain', 'YOUR TEXT'); e.dispatchEvent(new ClipboardEvent('paste', { bubbles: true, cancelable: true, clipboardData: d })); return e.innerText; })()" })
 ```
 
 **Injecting folder path (bypass native picker):**
@@ -120,7 +128,7 @@ Use the `__reactFiber$` → `CreateWorkspaceModal` reducer dispatch with `{ key:
 
 **Checking page state:**
 ```
-browser_evaluate({ browser_url: URL, expression: "document.body.innerText.substring(0, 500)" })
+browser_eval({ browser_url: URL, expression: "document.body.innerText.substring(0, 500)" })
 ```
 
 **Screenshots:**
@@ -140,8 +148,8 @@ checkpoints, and recordings for human PR evidence.
 
 ### Recording eval runs
 
-Always record eval runs so they can be attached to PRs. Use the built-in
-Daytona recording mechanism:
+Record eval runs when the user asks for PR evidence or the change is visual.
+Use the built-in Daytona recording mechanism:
 
 **Start with recording from the beginning:**
 ```bash
@@ -190,7 +198,8 @@ For UI flow verification, start the local app and attach browser tools to the lo
 pnpm dev
 ```
 
-Report clearly whether the result came from Daytona or the local fallback.
+Report clearly whether the result came from Daytona or the local fallback. A
+local fallback cannot be reported as a successful Daytona validation.
 
 ### Teardown
 

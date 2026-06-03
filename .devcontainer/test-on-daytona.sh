@@ -252,6 +252,7 @@ if [ "$RECORD_VIDEO" -eq 1 ]; then
   echo ""
   echo "==> Starting Daytona display recording..."
   daytona exec "$SANDBOX" -- "bash -lc 'cd /workspace; DISPLAY=:99 .devcontainer/start-daytona-recording.sh --detach --output \"$RECORDING_PATH\" --size \"$RECORDING_SIZE\" --fps \"$RECORDING_FPS\"'"
+  echo "    Recording is active. Begin the user-visible flow after the ready banner below."
 fi
 
 echo ""
@@ -293,6 +294,7 @@ if [ "$RECORD_VIDEO" -eq 1 ]; then
   echo ""
   echo "  Stop recording:"
   echo "    daytona exec $SANDBOX -- 'bash .devcontainer/stop-daytona-recording.sh'"
+  echo "  Validate recording duration before using it as evidence."
 fi
 echo ""
 echo "  Connect browser tools:"

@@ -14,6 +14,32 @@ DEST_ENV_FILE="${2:-openai.env}"
 SANDBOX="openwork-secrets-setup-$(date +%Y%m%d-%H%M%S)"
 SNAPSHOT_NAME="${DAYTONA_EVAL_SNAPSHOT:-openwork-eval-vnc}"
 
+volume_field() {
+  local name="$1"
+  local field="$2"
+  daytona volume list -f json | node -e 'const name = process.argv[1]; const field = process.argv[2]; let input = ""; process.stdin.on("data", (chunk) => input += chunk); process.stdin.on("end", () => { const volume = JSON.parse(input).find((item) => item.name === name); if (!volume) process.exit(1); process.stdout.write(String(volume[field] ?? "")); });' "$name" "$field"
+}
+
+wait_for_volume_ready() {
+  local name="$1"
+  local state=""
+
+  for _ in $(seq 1 60); do
+    state="$(volume_field "$name" state 2>/dev/null || true)"
+    if [ "$state" = "ready" ]; then
+      return 0
+    fi
+    if [ "$state" = "error" ]; then
+      echo "ERROR: volume '$name' is in error state" >&2
+      exit 1
+    fi
+    sleep 5
+  done
+
+  echo "ERROR: volume '$name' did not become ready (last state: ${state:-missing})" >&2
+  exit 1
+}
+
 if [[ ! "$DEST_ENV_FILE" =~ ^[A-Za-z0-9._-]+\.env$ ]]; then
   echo "ERROR: destination env file must be a simple .env filename, for example openai.env" >&2
   exit 1
@@ -28,7 +54,8 @@ volume_create_output="$(daytona volume create "$VOLUME_NAME" --size 1 2>&1 || tr
 if [ -n "$volume_create_output" ] && ! printf '%s' "$volume_create_output" | grep -qi "already exists"; then
   printf '%s\n' "$volume_create_output"
 fi
-VOLUME_ID="$(daytona volume list -f json | node -e 'const name = process.argv[1]; let input = ""; process.stdin.on("data", (chunk) => input += chunk); process.stdin.on("end", () => { const volume = JSON.parse(input).find((item) => item.name === name); if (!volume) process.exit(1); process.stdout.write(volume.id); });' "$VOLUME_NAME")"
+wait_for_volume_ready "$VOLUME_NAME"
+VOLUME_ID="$(volume_field "$VOLUME_NAME" id)"
 
 if [ ! -f "$LOCAL_ENV_FILE" ]; then
   echo "Volume ready: $VOLUME_NAME"

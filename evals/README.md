@@ -53,18 +53,18 @@ takes `browser_url` as the first argument.
 | `browser_snapshot` | Accessibility tree with UIDs |
 | `browser_click` | Click by snapshot UID |
 | `browser_fill` | Fill input by snapshot UID |
-| `browser_evaluate` | Run JS in the page |
+| `browser_eval` | Run JS in the page |
 | `browser_screenshot` | Capture PNG |
 
 ## Conventions
 
-- Use `browser_evaluate` for button clicks and text input — it's more reliable
+- Use `browser_eval` for button clicks and text input — it's more reliable
   than snapshot UIDs for dynamic React UIs.
 - For Lexical editors, use `document.execCommand('insertText', false, text)`
   after focusing. Direct DOM manipulation doesn't trigger Lexical state updates.
 - For React state injection (e.g., folder picker bypass), use the
   `__reactFiber$` → reducer dispatch pattern documented in `daytona-flows.md`.
-- When asked to "wait for X", use `sleep` then `browser_evaluate` to check.
+- When asked to "wait for X", use `sleep` then `browser_eval` to check.
 
 ## Files
 

@@ -36,6 +36,9 @@ bash .devcontainer/create-daytona-openwork-server-snapshot.sh
 
 ## Connect Electron To Server
 
+For end-to-end desktop validation, use the `daytona-electron-den` skill. This
+section only covers wiring the Electron sandbox to the printed server URLs.
+
 Start a second Daytona sandbox for Electron and point it at the server URLs:
 
 ```bash
@@ -78,3 +81,6 @@ desktop handoff auth, cloud restrictions, and worker proxy flows.
 Pair this with the `daytona-recording-artifacts` skill. Server proof should
 include health-check output, relevant logs, CDP assertions from Electron, and a
 recording or screenshot artifact for human review.
+
+Use `daytona-flow-validator` for pass/fail. Server health alone does not prove
+Electron cloud behavior works.
