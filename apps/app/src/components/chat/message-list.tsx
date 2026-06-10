@@ -79,7 +79,24 @@ import {
 } from "@/lib/build-in-tools"
 import type { ThreadStatus } from "@/lib/messages"
 import { cn } from "@/lib/utils"
-import { groupMessages, isMessageGroup, getLastTextPart, getAssistantRenderGroups, getFileTitle, getMediaBadge, type UIMessageWithIndex, getMessagesText } from "./utils"
+import { groupMessages, isMessageGroup, getLastTextPart, getAssistantRenderGroups, getFileTitle, getMediaBadge, getMessageCreated, formatMessageTimestamp, type UIMessageWithIndex, getMessagesText } from "./utils"
+
+function MessageTimestamp({ message, className }: { message: UIMessage; className?: string }) {
+  const created = getMessageCreated(message)
+  if (created === null) return null
+
+  return (
+    <span
+      className={cn(
+        "select-none whitespace-nowrap text-[11px] tabular-nums text-muted-foreground/70",
+        className
+      )}
+      title={new Date(created).toLocaleString()}
+    >
+      {formatMessageTimestamp(created)}
+    </span>
+  )
+}
 
 interface ToolMessageProps {
   part: ToolUIPart | DynamicToolUIPart
@@ -398,9 +415,10 @@ const UserMessage = React.memo(
           {!isStreaming && (
             <MessageActions
               className={cn(
-                "flex gap-0 opacity-0 transition-opacity duration-150 group-hover:opacity-100"
+                "flex items-center gap-0 opacity-0 transition-opacity duration-150 group-hover:opacity-100"
               )}
             >
+              <MessageTimestamp message={message} className="mr-1.5" />
               <CopyMessageButton messages={[message]} />
               <MessageAction tooltip="Branch in new chat">
                 <Button
@@ -719,6 +737,7 @@ function MessageGroup({
               </Button>
             </MessageAction>
           </MessageActions>
+          <MessageTimestamp message={lastItem.message} />
           {/* <MessageSources messages={items.map((item) => item.message)} /> */}
         </div>
       )}
