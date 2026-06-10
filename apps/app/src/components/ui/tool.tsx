@@ -7,8 +7,45 @@ import {
 } from "@/components/ui/collapsible"
 import { getToolActivityLabel, isToolPartInFlight } from "@/lib/tool-activity"
 import { cn } from "@/lib/utils"
-import { ChevronDown, CircleAlert, LoaderCircle, Wrench } from "lucide-react"
+import {
+  Bot,
+  ChevronDown,
+  CircleAlert,
+  FilePen,
+  ListTodo,
+  LoaderCircle,
+  MessageCircleQuestion,
+  Search,
+  Sparkles,
+  SquareCode,
+  Wrench,
+} from "lucide-react"
 import type { DynamicToolUIPart, ToolUIPart } from "ai"
+
+function toolIcon(part: ToolPart) {
+  const name = part.type === "dynamic-tool" ? part.toolName : part.type
+  switch (name) {
+    case "edit":
+    case "write":
+    case "apply_patch":
+      return FilePen
+    case "grep":
+    case "glob":
+      return Search
+    case "lsp":
+      return SquareCode
+    case "skill":
+      return Sparkles
+    case "todowrite":
+      return ListTodo
+    case "question":
+      return MessageCircleQuestion
+    case "task":
+      return Bot
+    default:
+      return Wrench
+  }
+}
 
 export type ToolPart = ToolUIPart | DynamicToolUIPart
 
@@ -29,6 +66,52 @@ const formatValue = (value: unknown): string => {
   return String(value)
 }
 
+function isDiffText(value: unknown): value is string {
+  return (
+    typeof value === "string" &&
+    (value.includes("@@") || value.includes("+++ ") || value.includes("--- "))
+  )
+}
+
+/** Tools like apply_patch carry the diff in their input (patchText). */
+function getInputDiff(input: unknown): string | null {
+  if (isDiffText(input)) {
+    return input
+  }
+  if (typeof input === "object" && input !== null && "patchText" in input) {
+    const value = input.patchText
+    if (isDiffText(value)) {
+      return value
+    }
+  }
+  return null
+}
+
+function diffLineClass(line: string) {
+  if (line.startsWith("+")) return "text-green-11 bg-green-1/40"
+  if (line.startsWith("-")) return "text-red-11 bg-red-1/40"
+  if (line.startsWith("@@")) return "text-blue-11 bg-blue-1/30"
+  return ""
+}
+
+function DiffLines({ diff }: { diff: string }) {
+  return (
+    <div className="max-h-60 overflow-auto rounded-md font-mono leading-relaxed">
+      {diff.split("\n").map((line, index) => (
+        <div
+          key={`${index}:${line}`}
+          className={cn(
+            "whitespace-pre-wrap wrap-break-word px-1",
+            diffLineClass(line)
+          )}
+        >
+          {line || " "}
+        </div>
+      ))}
+    </div>
+  )
+}
+
 const Tool = ({ title, toolPart, defaultOpen = false, className }: ToolProps) => {
   const { state, input } = toolPart
   const inFlight = isToolPartInFlight(toolPart)
@@ -36,6 +119,8 @@ const Tool = ({ title, toolPart, defaultOpen = false, className }: ToolProps) =>
   const label = title ?? getToolActivityLabel(toolPart)
   const hasInput = input !== null && input !== undefined
   const hasOutput = "output" in toolPart && toolPart.output !== undefined
+  const inputDiff = getInputDiff(input)
+  const Icon = toolIcon(toolPart)
 
   return (
     <Collapsible className={className} defaultOpen={defaultOpen}>
@@ -49,7 +134,7 @@ const Tool = ({ title, toolPart, defaultOpen = false, className }: ToolProps) =>
             ) : isError ? (
               <CircleAlert className="text-destructive size-4" />
             ) : (
-              <Wrench className="size-3.5" />
+              <Icon className="size-3.5" />
             )}
           </span>
           <ChevronDown className="absolute size-4 opacity-0 transition-opacity group-hover:opacity-100 group-data-panel-open:rotate-180" />
@@ -62,14 +147,22 @@ const Tool = ({ title, toolPart, defaultOpen = false, className }: ToolProps) =>
       <CollapsibleContent className="h-(--collapsible-panel-height) overflow-hidden text-sm transition-[height] duration-150 ease-out data-starting-style:h-0 data-ending-style:h-0 [&[hidden]:not([hidden='until-found'])]:hidden">
         <div className="bg-muted mt-2 flex flex-col gap-2 rounded-lg p-2 text-xs">
           {hasInput ? (
-            <pre className="whitespace-pre-wrap wrap-break-word">
-              {formatValue(input)}
-            </pre>
+            inputDiff !== null ? (
+              <DiffLines diff={inputDiff} />
+            ) : (
+              <pre className="whitespace-pre-wrap wrap-break-word">
+                {formatValue(input)}
+              </pre>
+            )
           ) : null}
           {hasOutput ? (
-            <pre className="max-h-60 overflow-auto whitespace-pre-wrap wrap-break-word opacity-80">
-              {formatValue(toolPart.output)}
-            </pre>
+            isDiffText(toolPart.output) ? (
+              <DiffLines diff={toolPart.output} />
+            ) : (
+              <pre className="max-h-60 overflow-auto whitespace-pre-wrap wrap-break-word opacity-80">
+                {formatValue(toolPart.output)}
+              </pre>
+            )
           ) : null}
           {isError && toolPart.errorText ? (
             <pre className="text-destructive whitespace-pre-wrap wrap-break-word">
