@@ -3,8 +3,14 @@ import { mkdir, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 
+import { ApiError } from "../errors.js";
 import type { ServerConfig } from "../types.js";
-import { googleWorkspaceDisconnect, googleWorkspaceSetActiveAccount, googleWorkspaceStatus } from "./google-workspace.js";
+import {
+  callGoogleWorkspaceExtensionAction,
+  googleWorkspaceDisconnect,
+  googleWorkspaceSetActiveAccount,
+  googleWorkspaceStatus,
+} from "./google-workspace.js";
 
 function createTestConfig(): ServerConfig {
   const tempDir = join(
@@ -40,10 +46,10 @@ async function writePlaintextVault(config: ServerConfig, value: Record<string, u
   await writeFile(target, `${JSON.stringify(value, null, 2)}\n`, "utf8");
 }
 
-function accountRecord(email: string, sub: string) {
+function accountRecord(email: string, sub: string, scopes: string[] = ["openid"]) {
   return {
     account: { email, name: email, sub, picture: null },
-    scopes: ["openid"],
+    scopes,
     token: { accessToken: `access-${sub}`, refreshToken: `refresh-${sub}`, expiresAt: Date.now() + 3600 * 1000 },
     connectedAt: new Date().toISOString(),
     updatedAt: new Date().toISOString(),
@@ -120,6 +126,100 @@ describe("Google Workspace extension", () => {
     expect(status.connected).toBe(true);
     expect(status.accounts.map((account) => account.email)).toEqual(["two@example.com"]);
     expect(status.activeAccountId).toBe("sub-two");
+  });
+
+  test("gmail_list_messages rejects accounts without the gmail.readonly scope", async () => {
+    process.env.OPENWORK_DEV_MODE = "1";
+    process.env.OPENWORK_GOOGLE_WORKSPACE_ALLOW_PLAINTEXT_VAULT = "1";
+    process.env.GOOGLE_WORKSPACE_OAUTH_CLIENT_SECRET = "secret";
+    const config = createTestConfig();
+    await writePlaintextVault(config, {
+      version: 2,
+      activeAccountId: "sub-one",
+      accounts: [accountRecord("one@example.com", "sub-one")],
+    });
+
+    expect(callGoogleWorkspaceExtensionAction(config, "gmail_list_messages", {}, {})).rejects.toThrow(
+      new ApiError(403, "google_gmail_read_not_granted", "Gmail read access is not granted for this account. Reconnect Google Workspace with Gmail read access enabled."),
+    );
+  });
+
+  test("gmail_list_messages returns message summaries", async () => {
+    process.env.OPENWORK_DEV_MODE = "1";
+    process.env.OPENWORK_GOOGLE_WORKSPACE_ALLOW_PLAINTEXT_VAULT = "1";
+    process.env.GOOGLE_WORKSPACE_OAUTH_CLIENT_SECRET = "secret";
+    const config = createTestConfig();
+    await writePlaintextVault(config, {
+      version: 2,
+      activeAccountId: "sub-one",
+      accounts: [accountRecord("one@example.com", "sub-one", ["openid", "https://www.googleapis.com/auth/gmail.readonly"])],
+    });
+    const requestedUrls: string[] = [];
+    globalThis.fetch = Object.assign(
+      async (input: string | URL | Request) => {
+        const url = String(input instanceof Request ? input.url : input);
+        requestedUrls.push(url);
+        if (url.includes("/messages/")) {
+          return new Response(JSON.stringify({
+            id: "m1",
+            threadId: "t1",
+            snippet: "Hello there",
+            labelIds: ["INBOX", "UNREAD"],
+            payload: { headers: [{ name: "Subject", value: "Quarterly report" }, { name: "From", value: "alice@example.com" }] },
+          }), { status: 200 });
+        }
+        return new Response(JSON.stringify({ messages: [{ id: "m1" }], resultSizeEstimate: 1 }), { status: 200 });
+      },
+      { preconnect: previousFetch.preconnect },
+    );
+
+    const result = await callGoogleWorkspaceExtensionAction(config, "gmail_list_messages", { query: "is:unread", maxResults: 5 }, {});
+    expect(result?.ok).toBe(true);
+    expect(result?.result).toEqual({
+      messages: [{
+        id: "m1",
+        threadId: "t1",
+        snippet: "Hello there",
+        labelIds: ["INBOX", "UNREAD"],
+        subject: "Quarterly report",
+        from: "alice@example.com",
+        to: "",
+        date: "",
+      }],
+      resultSizeEstimate: 1,
+    });
+    expect(requestedUrls[0]).toContain("q=is%3Aunread");
+    expect(requestedUrls[0]).toContain("maxResults=5");
+  });
+
+  test("gmail_get_message decodes the plain text body", async () => {
+    process.env.OPENWORK_DEV_MODE = "1";
+    process.env.OPENWORK_GOOGLE_WORKSPACE_ALLOW_PLAINTEXT_VAULT = "1";
+    process.env.GOOGLE_WORKSPACE_OAUTH_CLIENT_SECRET = "secret";
+    const config = createTestConfig();
+    await writePlaintextVault(config, {
+      version: 2,
+      activeAccountId: "sub-one",
+      accounts: [accountRecord("one@example.com", "sub-one", ["openid", "https://www.googleapis.com/auth/gmail.readonly"])],
+    });
+    const bodyData = Buffer.from("Hello from Gmail", "utf8").toString("base64").replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/g, "");
+    globalThis.fetch = Object.assign(
+      async () => new Response(JSON.stringify({
+        id: "m1",
+        threadId: "t1",
+        snippet: "Hello",
+        payload: {
+          mimeType: "multipart/alternative",
+          headers: [{ name: "Subject", value: "Greetings" }],
+          parts: [{ mimeType: "text/plain", body: { data: bodyData } }],
+        },
+      }), { status: 200 }),
+      { preconnect: previousFetch.preconnect },
+    );
+
+    const result = await callGoogleWorkspaceExtensionAction(config, "gmail_get_message", { messageId: "m1" }, {});
+    expect(result?.ok).toBe(true);
+    expect(result?.result).toMatchObject({ id: "m1", subject: "Greetings", body: "Hello from Gmail" });
   });
 
   test("can update the active account", async () => {
