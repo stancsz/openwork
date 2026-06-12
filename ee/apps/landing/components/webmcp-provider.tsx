@@ -29,7 +29,7 @@ const pricingSummary = {
     {
       id: "solo",
       name: "Solo",
-      price: "$0",
+      price: "Free",
       cadence: "free forever",
       highlights: [
         "Open-source desktop app",
@@ -41,10 +41,10 @@ const pricingSummary = {
     {
       id: "team-starter",
       name: "Team Starter",
-      price: "$50",
-      cadence: "per month",
+      price: "$10",
+      cadence: "per seat / month",
       highlights: [
-        "5 seats included",
+        "First 5 seats free",
         "API access",
         "Extension Marketplace",
         "Bring your own LLM keys, distributed to your team",
@@ -59,6 +59,7 @@ const pricingSummary = {
       highlights: [
         "Everything in Team Starter",
         "SSO / SAML and SCIM provisioning",
+        "Bring your own inference — self-hosted or private models",
         "Desktop policies and version controls",
         "Managed deployment, self-hosted or hosted",
         "Custom skill development and MCP consulting",
