@@ -2248,6 +2248,8 @@ function SettingsRouteContent(props: SettingsSurfaceProps = {}) {
                 uninstallSkill={(name) => { void extensionsStore.uninstallSkill(name); }}
                 removeCloudPlugin={(pluginId) => { void extensionsStore.removeCloudOrgPlugin(pluginId); }}
                 readSkill={(name) => extensionsStore.readSkill(name)}
+                previewClaudePlugin={(url) => extensionsStore.previewClaudePlugin(url)}
+                installClaudePlugin={(url) => extensionsStore.installClaudePlugin(url)}
                 showHeader={false}
               />
             }
