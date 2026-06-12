@@ -44,9 +44,9 @@ const stackItems = [
   },
   {
     id: "skill-hub",
-    title: "Skill Hub",
+    title: "Extension Marketplace",
     description:
-      "Publish reusable workflows and team-specific skill packs from one place.",
+      "Publish reusable skills, MCPs, and plugins for your team from one place.",
     icon: PlugZap,
     imageSrc: "/stack-skill-hub.png"
   },

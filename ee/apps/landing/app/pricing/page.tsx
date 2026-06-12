@@ -36,7 +36,7 @@ const pricingSchema = {
         priceCurrency: "USD",
         unitText: "MONTH"
       },
-      description: "5 seats, API access, Skill Hub Manager, distributed keys."
+      description: "5 seats, API access, Extension Marketplace, distributed keys."
     },
     {
       "@type": "Offer",

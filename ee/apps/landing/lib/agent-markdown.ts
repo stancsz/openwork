@@ -64,7 +64,7 @@ const pricing = `# OpenWork pricing — free, team, and enterprise
 
 - 5 seats included
 - API access
-- Skill Hub Manager
+- Extension Marketplace
 - Bring your own LLM keys, distributed to your team
 - CTA: [Start team plan](https://app.openworklabs.com/dashboard/billing)
 

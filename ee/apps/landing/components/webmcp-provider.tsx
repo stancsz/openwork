@@ -46,7 +46,7 @@ const pricingSummary = {
       highlights: [
         "5 seats included",
         "API access",
-        "Skill Hub Manager",
+        "Extension Marketplace",
         "Bring your own LLM keys, distributed to your team",
       ],
       cta: { label: "Start team plan", href: "https://app.openworklabs.com/dashboard/billing" },

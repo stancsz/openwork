@@ -135,7 +135,7 @@ export function PricingGrid(props: PricingGridProps) {
       features: [
         { text: "5 seats included", icon: Cloud },
         { text: "API access", icon: Cloud },
-        { text: "Skill Hub Manager", icon: Cloud },
+        { text: "Extension Marketplace", icon: Cloud },
         { text: "Bring your own LLM keys, distributed to your team", icon: Cloud },
       ],
       gradientColors: ["#2563EB", "#0284C7", "#0EA5E9", "#0F172A"],
