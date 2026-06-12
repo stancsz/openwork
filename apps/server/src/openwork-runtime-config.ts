@@ -19,6 +19,7 @@ import {
   openworkExtensionsPreviewPluginPath,
   openworkCapabilitiesKnowledgePluginPath,
   openworkAnthropicAdaptiveThinkingPluginPath,
+  openworkAnthropicToolSchemaPluginPath,
 } from "./openwork-extensions-plugin-path.js";
 import type { ServerConfig } from "./types.js";
 import {
@@ -86,6 +87,7 @@ export async function buildOpenworkRuntimeConfigObject(
       openworkExtensionsPreviewPluginPath(),
       openworkCapabilitiesKnowledgePluginPath(),
       openworkAnthropicAdaptiveThinkingPluginPath(),
+      openworkAnthropicToolSchemaPluginPath(),
       ...runtimePluginList(runtimeConfig),
     ],
     ...(disabledProviders.length ? { disabled_providers: disabledProviders } : {}),
