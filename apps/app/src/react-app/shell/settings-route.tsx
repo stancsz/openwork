@@ -32,8 +32,10 @@ import type {
 } from "@/app/types";
 import { getWorkspaceTaskLoadErrorDisplay } from "@/app/utils";
 import { currentLocale, t, setLocale, type Language } from "@/i18n";
+import { useModelPicker } from "@/react-app/domains/session/modals/use-model-picker";
 import {
   type RouteWorkspace,
+  type RouteSession,
   describeRouteError,
   describeWorkspaceCreateError,
   downloadWorkspaceJson,
@@ -138,7 +140,7 @@ import {
   testRemoteWorkspaceConnection,
 } from "@/react-app/domains/workspace/remote-workspace-diagnostics";
 import { ModelPickerModal } from "@/react-app/domains/session/modals/model-picker-modal";
-import type { ModelOption, ModelRef } from "@/app/types";
+import type { ModelRef } from "@/app/types";
 import { workspaceSwatchColor } from "@/react-app/domains/session/sidebar/utils";
 import { recordInspectorEvent } from "../../app/lib/app-inspector";
 import { ensureDesktopLocalOpenworkConnection } from "./desktop-local-openwork";
@@ -150,8 +152,7 @@ import { getDenInferenceUrl } from "@/app/lib/den";
 import { readActiveWorkspaceId, writeActiveWorkspaceId } from "./session-memory";
 import { workspaceSessionRoute, workspaceSettingsRoute } from "./workspace-routes";
 import { getReactQueryClient } from "@/react-app/infra/query-client";
-import { ensureProviderListQuery, getConnectedProviderItems, refreshProviderListQueries } from "@/react-app/infra/provider-list-query";
-import { openModelPickerEvent, pendingModelPickerProviderIdsKey } from "./new-providers-toast";
+import { refreshProviderListQueries } from "@/react-app/infra/provider-list-query";
 import {
   OPENAI_IMAGE_EXTENSION_ID,
   OPENAI_IMAGE_MODEL,
@@ -299,7 +300,7 @@ function findSessionWorkspaceId(
 ) {
   const id = sessionId?.trim();
   if (!id) return null;
-  return entries.find((entry) => entry.sessions.some((session: any) => session?.id === id))?.workspaceId ?? null;
+  return entries.find((entry) => entry.sessions.some((session) => session?.id === id))?.workspaceId ?? null;
 }
 
 function settingsPathForRoute(route: ReturnType<typeof parseSettingsPath>) {
@@ -334,7 +335,7 @@ function SettingsRouteContent(props: SettingsSurfaceProps = {}) {
 
   const [loading, setLoading] = useState(true);
   const [workspaces, setWorkspaces] = useState<RouteWorkspace[]>([]);
-  const [sessionsByWorkspaceId, setSessionsByWorkspaceId] = useState<Record<string, any[]>>({});
+  const [sessionsByWorkspaceId, setSessionsByWorkspaceId] = useState<Record<string, RouteSession[]>>({});
   const [errorsByWorkspaceId, setErrorsByWorkspaceId] = useState<Record<string, string | null>>({});
   const [workspaceConnectionOverrides, setWorkspaceConnectionOverrides] = useState<Record<string, WorkspaceConnectionState>>({});
   const [legacySelectedWorkspaceId, setLegacySelectedWorkspaceId] = useState(() => navigationWorkspaceId ?? readActiveWorkspaceId() ?? "");
@@ -397,10 +398,6 @@ function SettingsRouteContent(props: SettingsSurfaceProps = {}) {
   const [autoCompactContext, setAutoCompactContext] = useState(true);
   const [autoCompactContextBusy, setAutoCompactContextBusy] = useState(false);
   const [autoCompactContextLoaded, setAutoCompactContextLoaded] = useState(false);
-  const [modelPickerOpen, setModelPickerOpen] = useState(false);
-  // initialTab removed — model picker no longer has tabs
-  const [modelPickerQuery, setModelPickerQuery] = useState("");
-  const [modelOptions, setModelOptions] = useState<ModelOption[]>([]);
   const [localProviderBusy, setLocalProviderBusy] = useState(false);
   const [localProviderStatus, setLocalProviderStatus] = useState<string | null>(null);
   const [localProviderError, setLocalProviderError] = useState<string | null>(null);
@@ -501,7 +498,7 @@ function SettingsRouteContent(props: SettingsSurfaceProps = {}) {
     () =>
       Object.values(sessionsByWorkspaceId)
         .flat()
-        .flatMap((session: any) => {
+        .flatMap((session) => {
           if (!isActiveSessionStatus(getSessionStatus(session))) return [];
           const id = String(session?.id ?? "");
           if (!id) return [];
@@ -832,6 +829,22 @@ function SettingsRouteContent(props: SettingsSurfaceProps = {}) {
     setActiveClient(opencodeClient);
   }, [opencodeClient]);
 
+  const handleModelPickerLoadError = useCallback((error: unknown) => {
+    toast.error(error instanceof Error ? error.message : t("app.unknown_error"));
+  }, []);
+  const modelPicker = useModelPicker({
+    client: opencodeClient,
+    baseUrl: opencodeBaseUrl,
+    workspaceRoot: selectedWorkspaceRoot,
+    onLoadError: handleModelPickerLoadError,
+  });
+  // Settings refreshes provider auth whenever the picker opens (the session
+  // route does not need this; its provider state is kept fresh elsewhere).
+  useEffect(() => {
+    if (!modelPicker.open) return;
+    void providerAuthStore.refreshProviders();
+  }, [modelPicker.open, providerAuthStore]);
+
   useEffect(() => {
     const refresh = () => setExtensionStateVersion((value) => value + 1);
     window.addEventListener(OPENWORK_EXTENSION_STATE_CHANGED, refresh);
@@ -1054,89 +1067,6 @@ function SettingsRouteContent(props: SettingsSurfaceProps = {}) {
   }, [local, openworkClient, reloadCoordinator, runtimeWorkspaceId, selectedWorkspaceEndpoint]);
 
   useEffect(() => {
-    const openFromPending = (raw: string | null) => {
-      if (!raw) return false;
-      setModelPickerQuery("");
-      setModelPickerOpen(true);
-      return true;
-    };
-
-    try {
-      const raw = window.localStorage.getItem(pendingModelPickerProviderIdsKey);
-      if (openFromPending(raw)) {
-        window.localStorage.removeItem(pendingModelPickerProviderIdsKey);
-      }
-    } catch {
-      window.localStorage.removeItem(pendingModelPickerProviderIdsKey);
-    }
-
-    const handler = () => {
-      setModelPickerQuery("");
-      setModelPickerOpen(true);
-      try {
-        window.localStorage.removeItem(pendingModelPickerProviderIdsKey);
-      } catch {}
-    };
-    window.addEventListener(openModelPickerEvent, handler);
-    return () => window.removeEventListener(openModelPickerEvent, handler);
-  }, []);
-
-  useEffect(() => {
-    if (!modelPickerOpen || !opencodeClient) return;
-    let cancelled = false;
-    void providerAuthStore.refreshProviders();
-    void (async () => {
-      try {
-        const data = await ensureProviderListQuery(getReactQueryClient(), {
-          client: opencodeClient,
-          baseUrl: opencodeBaseUrl,
-          directory: selectedWorkspaceRoot || undefined,
-        });
-        if (cancelled || !data?.all) return;
-        let seenIds: Set<string>;
-        try {
-          const raw = window.localStorage.getItem("openwork.seenProviderIds");
-          seenIds = new Set(raw ? JSON.parse(raw) : []);
-        } catch {
-          seenIds = new Set();
-        }
-        const options: ModelOption[] = [];
-        for (const provider of getConnectedProviderItems(data)) {
-          const modelIds = Object.keys(provider.models);
-          const isNew = !seenIds.has(provider.id);
-          for (const id of modelIds) {
-            const model = provider.models[id];
-            options.push({
-              providerID: provider.id,
-              modelID: id,
-              title: model.name || id,
-              description: provider.name,
-              behaviorTitle: "Reasoning",
-              behaviorLabel: "Default",
-              behaviorDescription: "",
-              behaviorValue: null,
-              isFree: false,
-              isConnected: true,
-              isRecommended: isNew,
-              source: /^lpr_/i.test(provider.id) ? "cloud" as const : undefined,
-            });
-          }
-        }
-        setModelOptions(options);
-      } catch (error) {
-        toast.error(
-          error instanceof Error
-            ? error.message
-            : t("app.unknown_error"),
-        );
-      }
-    })();
-    return () => {
-      cancelled = true;
-    };
-  }, [modelPickerOpen, opencodeBaseUrl, opencodeClient, selectedWorkspaceRoot]);
-
-  useEffect(() => {
     local.setUi((previous) => ({ ...previous, view: "settings", tab: route.tab }));
     // eslint-disable-next-line react-hooks/exhaustive-deps -- local is stable via context
   }, [route.tab]);
@@ -1214,7 +1144,7 @@ function SettingsRouteContent(props: SettingsSurfaceProps = {}) {
             const response = await client.listSessions(workspace.id, { limit: 200 });
             const workspaceRoot = normalizeDirectoryPath(workspace.path ?? "");
             const items = workspaceRoot
-              ? (response.items ?? []).filter((session: any) =>
+              ? (response.items ?? []).filter((session) =>
                   normalizeDirectoryPath(session?.directory ?? "") === workspaceRoot,
                 )
               : (response.items ?? []);
@@ -2433,10 +2363,10 @@ function SettingsRouteContent(props: SettingsSurfaceProps = {}) {
         onCompleteMcpAuthModal={() => connectionsStore.completeMcpAuthModal()}
       />
       <ModelPickerModal
-        open={modelPickerOpen}
-        options={modelOptions}
-        query={modelPickerQuery}
-        setQuery={setModelPickerQuery}
+        open={modelPicker.open}
+        options={modelPicker.options}
+        query={modelPicker.query}
+        setQuery={modelPicker.setQuery}
         target="default"
         current={
           local.prefs.defaultModel ?? { providerID: "", modelID: "" }
@@ -2449,11 +2379,11 @@ function SettingsRouteContent(props: SettingsSurfaceProps = {}) {
               ? prev.modelVariant
               : null,
           }));
-          setModelPickerOpen(false);
+          modelPicker.setOpen(false);
         }}
         onBehaviorChange={() => {}}
         onOpenSettings={() => {}}
-        onClose={() => setModelPickerOpen(false)}
+        onClose={() => modelPicker.setOpen(false)}
       />
     </>
   );
