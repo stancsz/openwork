@@ -385,6 +385,10 @@ export function SessionRoute() {
   const [renameWorkspaceId, setRenameWorkspaceId] = useState<string | null>(null);
   const [renameWorkspaceTitle, setRenameWorkspaceTitle] = useState("");
   const [renameWorkspaceBusy, setRenameWorkspaceBusy] = useState(false);
+  const [developerMode, setDeveloperMode] = useState(() => {
+    if (typeof window === "undefined") return false;
+    return window.localStorage.getItem("openwork.developerMode") === "1";
+  });
   const [paletteAccessibleTargets, setPaletteAccessibleTargets] = useState<OpenTarget[]>([]);
   const [providers, setProviders] = useState<ProviderListItem[]>([]);
   const [providerDefaults, setProviderDefaults] = useState<Record<string, string>>({});
@@ -1293,6 +1297,22 @@ export function SessionRoute() {
     },
   ], [terminalOpen]);
 
+  const developerModePaletteItem = useMemo<PaletteItem>(() => ({
+    id: "developer-mode.toggle",
+    title: developerMode ? t("settings.disable_developer_mode") : t("settings.enable_developer_mode"),
+    detail: t("settings.developer_mode_desc"),
+    meta: developerMode ? "On" : "Off",
+    searchText: "developer dev mode debug diagnostics toggle enable disable",
+    action: () => {
+      setCommandPaletteOpen(false);
+      setDeveloperMode((current) => {
+        const next = !current;
+        try { window.localStorage.setItem("openwork.developerMode", next ? "1" : "0"); } catch {}
+        return next;
+      });
+    },
+  }), [developerMode]);
+
   const handleReorderWorkspaces = useCallback((workspaceIds: string[]) => {
     const activeWorkspaceIds = new Set(workspacesRef.current.map((workspace) => workspace.id));
     const nextOrderIds: string[] = [];
@@ -1489,7 +1509,7 @@ export function SessionRoute() {
       openworkServerStatus={client ? "connected" : "disconnected"}
       openworkServerClient={selectedWorkspaceEndpoint?.client ?? client}
       openworkServerToken={selectedWorkspaceServerToken}
-      developerMode={typeof window !== "undefined" && window.localStorage.getItem("openwork.developerMode") === "1"}
+      developerMode={developerMode}
       headerStatus={canCreateTask ? t("status.connected") : t("session.loading_detail")}
       busyHint={effectiveLoading ? t("session.loading_detail") : null}
       startupPhase={effectiveLoading ? "nativeInit" : "ready"}
@@ -1813,7 +1833,7 @@ export function SessionRoute() {
         }
       }}
       sessions={paletteSessionOptions}
-      extraItems={[sessionSearchPaletteItem, ...terminalPaletteItems]}
+      extraItems={[sessionSearchPaletteItem, ...terminalPaletteItems, developerModePaletteItem]}
       listAgents={listAgents}
       selectedAgent={selectedAgent}
       onSelectAgent={setSelectedAgent}
