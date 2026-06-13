@@ -285,6 +285,23 @@ export type WorkspaceUpdateRemoteInput = WorkspaceCreateRemoteInput & {
   workspaceId: string;
 };
 
+export type UiControlBridgeInfo = {
+  baseUrl?: string;
+  token?: string;
+};
+
+export type ComputerUsePermissions = {
+  ok: boolean;
+  accessibility: boolean;
+  screenRecording: boolean;
+  error?: string;
+};
+
+export type RunningAppsResult = {
+  ok: boolean;
+  apps: string[];
+};
+
 // ---------------------------------------------------------------------------
 // The command map
 // ---------------------------------------------------------------------------
@@ -338,14 +355,12 @@ export type DesktopCommandMap = {
   };
 
   // Engine / runtime lifecycle
-  // TODO: EngineInfo once runtime.mjs return inference is annotated (tsc
-  // currently infers void for the manager methods).
-  engineStart: { args: [projectDir: string, options?: Record<string, unknown>]; result: unknown };
+  engineStart: { args: [projectDir: string, options?: Record<string, unknown>]; result: EngineInfo };
   prepareFreshRuntime: { args: []; result: unknown };
   runtimeBootstrap: { args: []; result: unknown };
   runtimeStatus: { args: []; result: unknown };
-  engineStop: { args: []; result: unknown };
-  engineRestart: { args: [options?: Record<string, unknown>]; result: unknown };
+  engineStop: { args: []; result: EngineInfo };
+  engineRestart: { args: [options?: Record<string, unknown>]; result: EngineInfo };
   engineInfo: { args: []; result: EngineInfo };
   engineDoctor: { args: [projectDir?: string]; result: EngineDoctorResult };
   engineInstall: { args: []; result: unknown };
@@ -359,15 +374,15 @@ export type DesktopCommandMap = {
 
   // App / bridge info
   appBuildInfo: { args: []; result: AppBuildInfo };
-  getUiControlBridgeInfo: { args: []; result: unknown };
-  getOpenworkUiMcpCommand: { args: []; result: unknown };
-  getComputerUseMcpCommand: { args: []; result: unknown };
-  getOpenworkUiMcpEnvironment: { args: []; result: unknown };
+  getUiControlBridgeInfo: { args: []; result: UiControlBridgeInfo | null };
+  getOpenworkUiMcpCommand: { args: []; result: string[] };
+  getComputerUseMcpCommand: { args: []; result: string[] };
+  getOpenworkUiMcpEnvironment: { args: []; result: Record<string, string> };
 
   // Computer use
-  checkComputerUsePermissions: { args: []; result: unknown };
-  listRunningApps: { args: []; result: unknown };
-  openComputerUsePermissionSetup: { args: []; result: unknown };
+  checkComputerUsePermissions: { args: []; result: ComputerUsePermissions };
+  listRunningApps: { args: []; result: RunningAppsResult };
+  openComputerUsePermissionSetup: { args: []; result: ComputerUsePermissions };
   openComputerUsePermissionSettings: { args: []; result: unknown };
 
   // Bootstrap config
@@ -389,7 +404,7 @@ export type DesktopCommandMap = {
   openworkServerInfo: { args: []; result: OpenworkServerInfo };
   openworkServerRestart: {
     args: [options?: Record<string, unknown>];
-    result: unknown;
+    result: OpenworkServerInfo;
   };
 
   // Dialogs

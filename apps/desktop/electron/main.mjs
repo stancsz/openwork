@@ -26,6 +26,13 @@ import { createRuntimeManager } from "./runtime.mjs";
 import { registerUpdaterIpc } from "./updater.mjs";
 import { exportWorkspaceConfig, importWorkspaceConfig } from "./workspace-archive.mjs";
 import {
+  checkComputerUsePermissions,
+  getComputerUseMcpCommand,
+  listRunningApps,
+  openComputerUseSetupApp,
+} from "./computer-use.mjs";
+import { createUiControlServer } from "./ui-control-server.mjs";
+import {
   openworkWorkspaceDisplayName,
   selectOpenworkWorkspaceForConnection,
 } from "./remote-workspace.mjs";
@@ -47,8 +54,12 @@ const APP_IDENTIFIER = isDevMode ? DEV_APP_IDENTIFIER : TAURI_APP_IDENTIFIER;
 const RELEASE_DOWNLOAD_BASE_URL = "https://github.com/different-ai/openwork/releases/latest/download";
 const RELEASE_PAGE_URL = "https://github.com/different-ai/openwork/releases/latest";
 const DOCS_PAGE_URL = "https://openworklabs.com/docs";
-const COMPUTER_USE_HELPER_APP_NAME = "OpenWork Computer Use.app";
-const COMPUTER_USE_HELPER_EXECUTABLE = "ComputerUse";
+const uiControlServer = createUiControlServer({
+  appName: APP_NAME,
+  appIdentifier: APP_IDENTIFIER,
+  getWindow: () => createMainWindow(),
+});
+
 const terminalProcesses = new Map();
 let nextTerminalId = 1;
 
@@ -82,148 +93,6 @@ function killTerminalsForWebContents(webContentsId) {
   for (const [terminalId, terminal] of terminalProcesses.entries()) {
     if (terminal.webContentsId === webContentsId) killTerminal(terminalId);
   }
-}
-
-function computerUseHelperExecutablePath() {
-  const appPath = computerUseHelperAppPath();
-  const explicitBinary = process.env.OPENWORK_COMPUTER_USE_BINARY?.trim();
-  const candidates = [
-    explicitBinary,
-    appPath ? path.join(appPath, "Contents", "MacOS", COMPUTER_USE_HELPER_EXECUTABLE) : null,
-  ].filter(Boolean);
-
-  return candidates.find((candidate) => existsSync(candidate)) ?? null;
-}
-
-function computerUseHelperAppPath() {
-  const explicitApp = process.env.OPENWORK_COMPUTER_USE_APP?.trim();
-  const candidates = [
-    explicitApp,
-    process.resourcesPath ? path.join(process.resourcesPath, "helpers", COMPUTER_USE_HELPER_APP_NAME) : null,
-    path.resolve(__dirname, "..", "resources", "helpers", COMPUTER_USE_HELPER_APP_NAME),
-  ].filter(Boolean);
-
-  return candidates.find((candidate) => existsSync(candidate)) ?? null;
-}
-
-function getComputerUseMcpCommand() {
-  const helperExecutable = computerUseHelperExecutablePath();
-  if (helperExecutable) return [helperExecutable, "mcp"];
-
-  if (app.isPackaged) {
-    throw new Error("OpenWork Computer Use is missing from this OpenWork build.");
-  }
-
-  if (process.env.OPENWORK_DEV_MODE === "1") {
-    return ["node", path.resolve(__dirname, "../../..", "packages/handsfree/bin/openwork-handsfree-computer-use.mjs"), "mcp"];
-  }
-  return ["npx", "-y", "@openwork/handsfree", "mcp"];
-}
-
-// ---------------------------------------------------------------------------
-// Permission checks — spawn the binary with --check, read stdout, done.
-// Fresh process = fresh TCC read = always accurate. No HTTP server needed.
-// ---------------------------------------------------------------------------
-
-function resolveComputerUseExecutable() {
-  // 1. Explicit env override.
-  const explicit = process.env.OPENWORK_COMPUTER_USE_BINARY?.trim();
-  if (explicit && existsSync(explicit)) return explicit;
-
-  // 2. .app bundle (packaged builds + pnpm dev).
-  const appPath = computerUseHelperAppPath();
-  if (appPath) {
-    const bin = path.join(appPath, "Contents", "MacOS", COMPUTER_USE_HELPER_EXECUTABLE);
-    if (existsSync(bin)) return bin;
-  }
-
-  // 3. Dev fallback — raw Swift build output.
-  if (!app.isPackaged) {
-    const swiftPkg = path.resolve(__dirname, "../../..", "packages/handsfree/native/HandsFree");
-    const devCandidates = [
-      path.join(swiftPkg, ".build", "release", "HandsFreeComputerUse"),
-      path.join(swiftPkg, ".build", "arm64-apple-macosx", "release", "HandsFreeComputerUse"),
-      path.join(swiftPkg, ".build", "debug", "HandsFreeComputerUse"),
-      path.join(swiftPkg, ".build", "arm64-apple-macosx", "debug", "HandsFreeComputerUse"),
-    ];
-    for (const c of devCandidates) {
-      if (existsSync(c)) return c;
-    }
-  }
-
-  return null;
-}
-
-async function checkComputerUsePermissions() {
-  // Spawn binary --check → read JSON from stdout → exit. Always fresh.
-  const bin = resolveComputerUseExecutable();
-  if (!bin) {
-    return { ok: false, accessibility: false, screenRecording: false, error: "Helper binary not found. Run pnpm dev to build it." };
-  }
-  return spawnCheckPermissions(bin);
-}
-
-function spawnCheckPermissions(bin) {
-  return new Promise((resolve) => {
-    let stdout = "";
-    const child = spawn(bin, ["--check"], { stdio: ["ignore", "pipe", "ignore"], timeout: 5_000 });
-    child.stdout.setEncoding("utf8");
-    child.stdout.on("data", (chunk) => { stdout += chunk; });
-    child.on("error", () => resolve({ ok: false, accessibility: false, screenRecording: false, error: "Failed to run permission check." }));
-    child.on("close", () => {
-      try {
-        const parsed = JSON.parse(stdout.trim());
-        resolve({
-          ok: parsed?.ok === true,
-          accessibility: parsed?.accessibility === true,
-          screenRecording: parsed?.screenRecording === true,
-        });
-      } catch {
-        resolve({ ok: false, accessibility: false, screenRecording: false, error: "Permission check returned invalid output." });
-      }
-    });
-  });
-}
-
-async function listRunningApps() {
-  // Spawn binary --list-apps → read JSON from stdout → exit. Needs no TCC
-  // permissions, so this works before Computer Use setup is complete.
-  if (process.platform !== "darwin") return { ok: false, apps: [] };
-  const bin = resolveComputerUseExecutable();
-  if (!bin) return { ok: false, apps: [] };
-  return new Promise((resolve) => {
-    let stdout = "";
-    const child = spawn(bin, ["--list-apps"], { stdio: ["ignore", "pipe", "ignore"], timeout: 5_000 });
-    child.stdout.setEncoding("utf8");
-    child.stdout.on("data", (chunk) => { stdout += chunk; });
-    child.on("error", () => resolve({ ok: false, apps: [] }));
-    child.on("close", () => {
-      try {
-        const parsed = JSON.parse(stdout.trim());
-        const apps = Array.isArray(parsed?.apps) ? parsed.apps.filter((name) => typeof name === "string" && name.trim()) : [];
-        resolve({ ok: parsed?.ok === true, apps });
-      } catch {
-        resolve({ ok: false, apps: [] });
-      }
-    });
-  });
-}
-
-async function openComputerUseSetupApp() {
-  // Open the GUI. Use the .app bundle if available so macOS shows it as
-  // a real app with its own dock icon and permission identity.
-  const appPath = computerUseHelperAppPath();
-  if (appPath) {
-    const result = await shell.openPath(appPath);
-    if (result) console.error("[ComputerUse] shell.openPath error:", result);
-    return;
-  }
-
-  // Fallback: spawn the raw binary (opens the same GUI).
-  const bin = resolveComputerUseExecutable();
-  if (!bin) throw new Error("Helper binary not found. Run pnpm dev to build it.");
-  const child = spawn(bin, [], { detached: true, stdio: "ignore" });
-  child.unref();
 }
 
 // Production Electron shares the same on-disk state folder as the Tauri shell
@@ -526,9 +395,6 @@ const IDLE_ROUTER_INFO = Object.freeze({
 
 let mainWindow = null;
 const pendingDeepLinks = [];
-let uiControlServer = null;
-let uiControlDiscoveryPath = null;
-const uiControlToken = randomBytes(32).toString("hex");
 
 // ── Embedded browser panel ─────────────────────────────────────────────
 const browserTabs = new Map();
@@ -3081,148 +2947,6 @@ async function handleDesktopInvoke(event, command, ...args) {
   return handler(event, ...args);
 }
 
-function sendJsonResponse(response, statusCode, payload) {
-  response.writeHead(statusCode, {
-    "Content-Type": "application/json; charset=utf-8",
-    "Cache-Control": "no-store",
-  });
-  response.end(JSON.stringify(payload));
-}
-
-function readJsonRequestBody(request) {
-  return new Promise((resolve, reject) => {
-    let raw = "";
-    request.setEncoding("utf8");
-    request.on("data", (chunk) => {
-      raw += chunk;
-      if (raw.length > 128_000) {
-        reject(new Error("Request body too large"));
-        request.destroy();
-      }
-    });
-    request.on("end", () => {
-      if (!raw.trim()) {
-        resolve({});
-        return;
-      }
-      try {
-        resolve(JSON.parse(raw));
-      } catch {
-        reject(new Error("Request body must be JSON"));
-      }
-    });
-    request.on("error", reject);
-  });
-}
-
-function authorizedUiControlRequest(request) {
-  const auth = request.headers.authorization ?? "";
-  return auth === `Bearer ${uiControlToken}`;
-}
-
-function jsonForJavaScript(value) {
-  return JSON.stringify(JSON.stringify(value ?? {}));
-}
-
-async function evaluateOpenworkControl(expression, options = {}) {
-  const win = await createMainWindow();
-  if (options.focus === true) {
-    win.show();
-    if (win.isMinimized()) win.restore();
-    win.focus();
-  }
-  return win.webContents.executeJavaScript(expression, true);
-}
-
-async function runOpenworkControlCommand(command, args = {}) {
-  const argsJsonLiteral = jsonForJavaScript(args);
-  if (command === "snapshot") {
-    return evaluateOpenworkControl(`(async () => {
-      const control = window.__openworkControl;
-      if (!control) return { ok: false, error: "OpenWork control surface is not available yet." };
-      control.setEnabled?.(true);
-      return { ok: true, ...control.snapshot() };
-    })()`);
-  }
-  if (command === "actions") {
-    return evaluateOpenworkControl(`(async () => {
-      const control = window.__openworkControl;
-      if (!control) return { ok: false, error: "OpenWork control surface is not available yet." };
-      control.setEnabled?.(true);
-      return { ok: true, actions: control.listActions() };
-    })()`);
-  }
-  if (command === "execute") {
-    return evaluateOpenworkControl(`(async () => {
-      const control = window.__openworkControl;
-      const input = JSON.parse(${argsJsonLiteral});
-      if (!control) return { ok: false, error: "OpenWork control surface is not available yet." };
-      if (!input || typeof input.actionId !== "string" || !input.actionId.trim()) {
-        return { ok: false, error: "Missing OpenWork actionId." };
-      }
-      control.setEnabled?.(true);
-      return control.execute(input.actionId, input.args ?? {});
-    })()`, { focus: true });
-  }
-  return { ok: false, error: `Unknown OpenWork control command: ${command}` };
-}
-
-async function startUiControlServer() {
-  if (uiControlServer) return;
-  uiControlServer = createServer(async (request, response) => {
-    try {
-      const url = new URL(request.url ?? "/", "http://127.0.0.1");
-      if (request.method === "GET" && url.pathname === "/health") {
-        sendJsonResponse(response, 200, { ok: true, app: APP_NAME, version: 1 });
-        return;
-      }
-      if (!authorizedUiControlRequest(request)) {
-        sendJsonResponse(response, 401, { ok: false, error: "Unauthorized" });
-        return;
-      }
-      if (request.method === "GET" && url.pathname === "/snapshot") {
-        sendJsonResponse(response, 200, await runOpenworkControlCommand("snapshot"));
-        return;
-      }
-      if (request.method === "GET" && url.pathname === "/actions") {
-        sendJsonResponse(response, 200, await runOpenworkControlCommand("actions"));
-        return;
-      }
-      if (request.method === "POST" && url.pathname === "/execute") {
-        sendJsonResponse(response, 200, await runOpenworkControlCommand("execute", await readJsonRequestBody(request)));
-        return;
-      }
-      sendJsonResponse(response, 404, { ok: false, error: "Not found" });
-    } catch (error) {
-      sendJsonResponse(response, 500, { ok: false, error: error instanceof Error ? error.message : String(error) });
-    }
-  });
-  await new Promise((resolve, reject) => {
-    uiControlServer.once("error", reject);
-    uiControlServer.listen(0, "127.0.0.1", () => resolve(undefined));
-  });
-  const address = uiControlServer.address();
-  const port = typeof address === "object" && address ? address.port : null;
-  if (!port) throw new Error("Could not start OpenWork UI control bridge.");
-  uiControlDiscoveryPath = path.join(app.getPath("userData"), "openwork-ui-control.json");
-  await writeFile(
-    uiControlDiscoveryPath,
-    `${JSON.stringify({ version: 1, app: APP_NAME, identifier: APP_IDENTIFIER, platform: process.platform, baseUrl: `http://127.0.0.1:${port}`, token: uiControlToken }, null, 2)}\n`,
-    "utf8",
-  );
-  // Make the discovery path available to child processes (server → managed OpenCode → plugin).
-  process.env.OPENWORK_UI_CONTROL_DISCOVERY = uiControlDiscoveryPath;
-}
-
-async function stopUiControlServer() {
-  if (uiControlDiscoveryPath) {
-    await rm(uiControlDiscoveryPath, { force: true }).catch(() => undefined);
-    uiControlDiscoveryPath = null;
-  }
-  if (!uiControlServer) return;
-  await new Promise((resolve) => uiControlServer.close(() => resolve(undefined)));
-  uiControlServer = null;
-}
 
 async function createMainWindow() {
   if (mainWindow) return mainWindow;
@@ -3466,7 +3190,7 @@ if (!app.requestSingleInstanceLock()) {
     event.preventDefault();
     if (runtimeDisposeInProgress) return;
     showShutdownScreen();
-    void Promise.all([disposeRuntimeBeforeQuit(), stopUiControlServer()]).finally(() => app.quit());
+    void Promise.all([disposeRuntimeBeforeQuit(), uiControlServer.stop()]).finally(() => app.quit());
   });
 
   app.on("second-instance", async (_event, argv) => {
@@ -3494,7 +3218,7 @@ if (!app.requestSingleInstanceLock()) {
     // Electron see the same workspace list. Import the short-lived
     // Electron-only filename only when the shared file is missing.
     await migrateLegacyElectronWorkspaceStateIfNeeded();
-    await startUiControlServer().catch((error) => {
+    await uiControlServer.start().catch((error) => {
       console.warn("[ui-control] failed to start", error);
     });
     runtimeBootstrapPromise = bootRuntimeForSelectedWorkspace().catch((error) => ({
