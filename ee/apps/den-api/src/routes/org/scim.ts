@@ -3,7 +3,7 @@ import { describeRoute, resolver } from "hono-openapi"
 import { z } from "zod"
 import { deleteOrganizationScimConnection, getOrganizationScimConnection, getScimBaseUrl, rotateOrganizationScimToken } from "../../scim.js"
 import { ORGANIZATION_AUDIT_ACTIONS, recordOrganizationAuditEvent } from "../../audit-events.js"
-import { requireUserMiddleware, resolveOrganizationContextMiddleware } from "../../middleware/index.js"
+import { orgMemberRoute } from "../../middleware/index.js"
 import type { OrgRouteVariables } from "./shared.js"
 import { ensureScimManager, orgAccessFailureStatus } from "./shared.js"
 
@@ -109,8 +109,7 @@ export function registerOrgScimRoutes<T extends { Variables: OrgRouteVariables }
         },
       },
     }),
-    requireUserMiddleware,
-    resolveOrganizationContextMiddleware,
+    orgMemberRoute(),
     async (c) => {
       const access = ensureScimManager(c)
       if (!access.ok) {
@@ -178,8 +177,7 @@ export function registerOrgScimRoutes<T extends { Variables: OrgRouteVariables }
         },
       },
     }),
-    requireUserMiddleware,
-    resolveOrganizationContextMiddleware,
+    orgMemberRoute(),
     async (c) => {
       const access = ensureScimManager(c)
       if (!access.ok) {
@@ -255,8 +253,7 @@ export function registerOrgScimRoutes<T extends { Variables: OrgRouteVariables }
         },
       },
     }),
-    requireUserMiddleware,
-    resolveOrganizationContextMiddleware,
+    orgMemberRoute(),
     async (c) => {
       const access = ensureScimManager(c)
       if (!access.ok) {
