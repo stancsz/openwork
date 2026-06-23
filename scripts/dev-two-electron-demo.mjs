@@ -20,7 +20,7 @@ const appProfiles = {
     cdpPort: "9823",
     label: "demo-a",
     portFlag: "--admin-port",
-    port: "5173",
+    port: "5273",
     requireSignin: false,
     userDataName: "admin-userdata",
   },
@@ -32,7 +32,7 @@ const appProfiles = {
     cdpPort: "9824",
     label: "demo-b",
     portFlag: "--consumer-port",
-    port: "5174",
+    port: "5274",
     requireSignin: true,
     userDataName: "consumer-userdata",
   },
@@ -164,7 +164,7 @@ function demoEnv(profile, bootstrapPath, port, cdpPort) {
 
 async function main() {
   if (flag("--help") || flag("-h")) {
-    console.log(`Usage: pnpm dev:electron:two [options]\n\nStarts two isolated Electron dev instances for a local Den demo.\n\nOptions:\n  --reset                 Delete demo profile data before launching\n  --reset-only            Delete demo profile data and exit\n  --den-web-url <url>     Den Web URL (default: http://localhost:3005)\n  --den-api-url <url>     Den API URL (default: http://localhost:8788)\n  --admin-port <port>     Demo A Vite port (default: 5173)\n  --consumer-port <port>  Demo B Vite port (default: 5174)\n  --admin-cdp <port>      Demo A Electron CDP port (default: 9823)\n  --consumer-cdp <port>   Demo B Electron CDP port (default: 9824)\n`);
+    console.log(`Usage: pnpm dev:electron:two [options]\n\nStarts two isolated Electron dev instances for a local Den demo.\n\nOptions:\n  --reset                 Delete demo profile data before launching\n  --reset-only            Delete demo profile data and exit\n  --den-web-url <url>     Den Web URL (default: http://localhost:3005)\n  --den-api-url <url>     Den API URL (default: http://localhost:8788)\n  --admin-port <port>     Demo A Vite port (default: 5273)\n  --consumer-port <port>  Demo B Vite port (default: 5274)\n  --admin-cdp <port>      Demo A Electron CDP port (default: 9823)\n  --consumer-cdp <port>   Demo B Electron CDP port (default: 9824)\n`);
     return;
   }
 
