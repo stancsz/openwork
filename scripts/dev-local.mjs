@@ -182,7 +182,7 @@ async function main() {
   }
 
   console.log("[den] Syncing Den schema...")
-  await run("bash", ["-lc", "pnpm --filter @openwork-ee/den-db build && pnpm --filter @openwork-ee/den-db exec node --import tsx ./node_modules/drizzle-kit/bin.cjs push --config drizzle.config.ts --force"], {
+  await run("bash", ["-c", "pnpm --filter @openwork-ee/den-db build && pnpm --filter @openwork-ee/den-db exec node --import tsx ./node_modules/drizzle-kit/bin.cjs push --config drizzle.config.ts --force"], {
     env: {
       ...process.env,
       DATABASE_URL: databaseUrl,
