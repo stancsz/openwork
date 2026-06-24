@@ -99,6 +99,7 @@ import {
   type SessionGroupDefinition,
 } from "./session-management-store";
 import { cn } from "@/lib/utils";
+import { useBrandLogoUrl } from "../../cloud/brand-theme";
 import { WorkspaceIcon } from "../../../design-system/workspace-icon";
 import { getSessionActivityStatusLabel, type SessionActivityStatus } from "../status/session-activity-store";
 
@@ -723,6 +724,8 @@ export function AppSidebar(props: AppSidebarProps) {
     expandedSessionIds,
   };
 
+  const brandLogoUrl = useBrandLogoUrl();
+
   return (
     <SidebarContext.Provider value={contextValue}>
       <Sidebar
@@ -730,6 +733,18 @@ export function AppSidebar(props: AppSidebarProps) {
         className="mac:**:data-[sidebar=sidebar]:bg-transparent"
       >
         <div className="hidden h-14 mac:block mac:titlebar-drag"/>
+        {brandLogoUrl ? (
+          <div
+            data-testid="brand-logo"
+            className="flex shrink-0 items-center px-3 pb-3 pt-2 mac:pt-0"
+          >
+            <img
+              src={brandLogoUrl}
+              alt="Organization logo"
+              className="h-9 max-h-9 w-auto max-w-[180px] object-contain object-left"
+            />
+          </div>
+        ) : null}
         <LazyMotion features={domMax}>
           <m.div
             layoutScroll
