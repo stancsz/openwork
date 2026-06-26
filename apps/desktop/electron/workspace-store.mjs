@@ -172,10 +172,51 @@ export function createWorkspaceStore({ app, defaultDenBaseUrl, defaultRequireSig
       typeof input?.apiBaseUrl === "string" && input.apiBaseUrl.trim().length > 0
         ? input.apiBaseUrl.trim()
         : null;
+    // The handoff grant is a one-time, short-lived (~5 min) desktop sign-in
+    // token written to this machine-local config by the bootstrap CLI. The app
+    // exchanges it once on boot and then rewrites this file with `handoff: null`
+    // (see den-auth-provider) so it is never reusable. It is intentionally kept
+    // in plaintext here because it is single-use and local-only; do not persist
+    // long-lived secrets in this file.
+    const handoffInput = input?.handoff;
+    const handoff = handoffInput && typeof handoffInput === "object"
+      ? {
+          grant: typeof handoffInput.grant === "string" ? handoffInput.grant.trim() : "",
+          denBaseUrl: typeof handoffInput.denBaseUrl === "string" ? handoffInput.denBaseUrl.trim() : "",
+          orgId: typeof handoffInput.orgId === "string" ? handoffInput.orgId.trim() : "",
+          orgName: typeof handoffInput.orgName === "string" ? handoffInput.orgName.trim() : "",
+          orgSlug: typeof handoffInput.orgSlug === "string" ? handoffInput.orgSlug.trim() : "",
+          skillId: typeof handoffInput.skillId === "string" ? handoffInput.skillId.trim() : "",
+          skillTitle: typeof handoffInput.skillTitle === "string" ? handoffInput.skillTitle.trim() : "",
+          createdAt: typeof handoffInput.createdAt === "string" ? handoffInput.createdAt.trim() : "",
+        }
+      : null;
+    const normalizedHandoff = handoff?.grant && handoff.denBaseUrl && handoff.orgId && handoff.orgName && handoff.skillId && handoff.skillTitle
+      ? handoff
+      : null;
+    const preparedInput = input?.prepared;
+    const prepared = preparedInput && typeof preparedInput === "object"
+      ? {
+          orgId: typeof preparedInput.orgId === "string" ? preparedInput.orgId.trim() : "",
+          orgName: typeof preparedInput.orgName === "string" ? preparedInput.orgName.trim() : "",
+          orgSlug: typeof preparedInput.orgSlug === "string" ? preparedInput.orgSlug.trim() : "",
+          skillId: typeof preparedInput.skillId === "string" ? preparedInput.skillId.trim() : "",
+          skillTitle: typeof preparedInput.skillTitle === "string" ? preparedInput.skillTitle.trim() : "",
+          skillsDir: typeof preparedInput.skillsDir === "string" ? preparedInput.skillsDir.trim() : "",
+          skillPath: typeof preparedInput.skillPath === "string" ? preparedInput.skillPath.trim() : "",
+          preparedAt: typeof preparedInput.preparedAt === "string" ? preparedInput.preparedAt.trim() : "",
+        }
+      : null;
+    const normalizedPrepared = prepared?.orgId && prepared.orgName && prepared.skillId && prepared.skillTitle && prepared.skillPath
+      ? prepared
+      : null;
+
     return {
       baseUrl,
       apiBaseUrl,
       requireSignin: forceRequireSignin || input?.requireSignin === true,
+      ...(normalizedHandoff ? { handoff: normalizedHandoff } : {}),
+      ...(normalizedPrepared ? { prepared: normalizedPrepared } : {}),
     };
   }
 

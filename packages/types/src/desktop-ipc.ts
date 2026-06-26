@@ -127,10 +127,29 @@ export type AppBuildInfo = {
   arch?: string | null;
 };
 
+/** Org + first-skill identity shared by the handoff and prepared records. */
+export type DesktopBootstrapOrgSkill = {
+  orgId: string;
+  orgName: string;
+  orgSlug: string;
+  skillId: string;
+  skillTitle: string;
+};
+
 export type DesktopBootstrapConfig = {
   baseUrl: string;
   apiBaseUrl?: string | null;
   requireSignin: boolean;
+  handoff?: (DesktopBootstrapOrgSkill & {
+    grant: string;
+    denBaseUrl: string;
+    createdAt: string;
+  }) | null;
+  prepared?: (DesktopBootstrapOrgSkill & {
+    skillsDir: string;
+    skillPath: string;
+    preparedAt: string;
+  }) | null;
 };
 
 export type OrchestratorDetachedHost = {

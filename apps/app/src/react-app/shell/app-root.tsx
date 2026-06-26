@@ -8,12 +8,11 @@ import {
   createDenClient,
   readDenBootstrapConfig,
   readDenSettings,
-  writeDenSettings,
 } from "../../app/lib/den";
+import { exchangeHandoffAndSignIn } from "../../app/lib/den-handoff";
 import {
   denSettingsChangedEvent,
   denSessionUpdatedEvent,
-  dispatchDenSessionUpdated,
 } from "../../app/lib/den-session-events";
 import { useDenAuth } from "../domains/cloud/den-auth-provider";
 import { ForcedSigninPage } from "../domains/cloud/forced-signin-page";
@@ -160,24 +159,13 @@ function DenAuthControlActions() {
       const settings = readDenSettings();
       const targetBaseUrl = argBaseUrl?.trim() || settings.baseUrl;
       const client = createDenClient({ baseUrl: targetBaseUrl, apiBaseUrl: settings.apiBaseUrl });
-      const result = await client.exchangeDesktopHandoff(grant.trim());
-      if (!result.token) return { ok: false, error: "No token returned" };
-      writeDenSettings({
+      const result = await exchangeHandoffAndSignIn(grant.trim(), {
         baseUrl: targetBaseUrl,
-        apiBaseUrl: client.baseUrls.apiBaseUrl,
-        authToken: result.token,
-        activeOrgId: null,
-        activeOrgSlug: null,
-        activeOrgName: null,
+        client,
+        fallbackErrorMessage: "No token returned",
       });
-      dispatchDenSessionUpdated({
-        status: "success",
-        baseUrl: targetBaseUrl,
-        token: result.token,
-        user: result.user,
-        email: result.user?.email ?? null,
-      });
-      return { email: result.user?.email };
+      if (!result.ok) return { ok: false, error: result.error };
+      return { email: result.exchange.user?.email };
     },
   }), []);
   useControlAction(exchangeGrantAction);
@@ -276,6 +264,7 @@ export function AppRoot() {
                   </DevProfiler>
                 }
               />
+
               <Route
                 path="/session"
                 element={

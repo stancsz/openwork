@@ -30,7 +30,6 @@ const externalLinkProps = (href: string) =>
     : {};
 
 const CLOUD_SIGNUP_URL = "https://app.openworklabs.com?mode=sign-up";
-
 export function LandingHome(props: Props) {
   const [activeDemoId, setActiveDemoId] = useState(defaultLandingDemoFlowId);
   const [activeUseCase, setActiveUseCase] = useState(0);
@@ -113,7 +112,7 @@ export function LandingHome(props: Props) {
                   </span>
                 </div>
               </div>
-
+ 
             </div>
           </section>
 
