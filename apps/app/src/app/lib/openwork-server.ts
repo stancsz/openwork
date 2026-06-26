@@ -889,6 +889,7 @@ const resolveFetch = (url?: string) => {
 };
 
 const DEFAULT_OPENWORK_SERVER_TIMEOUT_MS = 10_000;
+const ENGINE_RELOAD_TIMEOUT_MS = 60_000;
 
 type FetchLike = (input: RequestInfo | URL, init?: RequestInit) => Promise<Response>;
 
@@ -1386,6 +1387,7 @@ export function createOpenworkServerClient(options: { baseUrl: string; token?: s
         token,
         hostToken,
         method: "POST",
+        timeoutMs: ENGINE_RELOAD_TIMEOUT_MS,
       }),
     listPlugins: (workspaceId: string, options?: { includeGlobal?: boolean }) => {
       const query = options?.includeGlobal ? "?includeGlobal=true" : "";

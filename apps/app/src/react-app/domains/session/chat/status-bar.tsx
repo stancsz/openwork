@@ -60,7 +60,6 @@ type StatusIndicatorProps = {
   clientConnected: boolean;
   openworkServerStatus: OpenworkServerStatus;
   developerMode: boolean;
-  mcpConnectedCount: number;
   loading?: boolean;
   initializing: boolean;
   reloadBusy?: boolean;
@@ -120,9 +119,7 @@ function StatusIndicator(props: StatusIndicatorProps) {
           <TooltipContent>{t("status.connected")}</TooltipContent>
         </Tooltip>
         <span className="truncate text-muted-foreground text-xs">
-          {props.mcpConnectedCount > 0
-            ? t("status.mcp_connected", undefined, { count: props.mcpConnectedCount })
-            : t("status.ready_for_tasks")}
+          {t("status.ready_for_tasks")}
         </span>
         {props.developerMode ? (
           <span className="truncate text-muted-foreground text-xs">
@@ -141,9 +138,7 @@ function StatusIndicator(props: StatusIndicatorProps) {
           {t("status.limited_mode")}
         </span>
         <span className="truncate text-muted-foreground text-xs">
-          {props.mcpConnectedCount > 0
-            ? t("status.limited_mcp_hint", undefined, { count: props.mcpConnectedCount })
-            : t("status.limited_hint")}
+          {t("status.limited_hint")}
         </span>
       </div>
     );
@@ -303,7 +298,6 @@ export function StatusBar(props: StatusBarProps) {
           clientConnected={props.clientConnected}
           openworkServerStatus={props.openworkServerStatus}
           developerMode={props.developerMode}
-          mcpConnectedCount={props.mcpConnectedCount}
           loading={props.loading}
           initializing={initializing}
           reloadBusy={props.reloadBusy}

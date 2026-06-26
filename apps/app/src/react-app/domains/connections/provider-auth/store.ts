@@ -77,6 +77,37 @@ import {
 type ProviderReturnFocusTarget = "none" | "composer";
 type CloudProviderSyncReason = "sign_in" | "app_launch" | "interval" | "settings_cloud_opened";
 
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
+function stableConfigValue(value: unknown): unknown {
+  if (Array.isArray(value)) {
+    return value.map(stableConfigValue);
+  }
+  if (!isRecord(value)) {
+    return value;
+  }
+  return Object.fromEntries(
+    Object.keys(value)
+      .sort()
+      .map((key) => [key, stableConfigValue(value[key])]),
+  );
+}
+
+function canonicalConfig(raw: string): string | null {
+  const parsed: unknown = parse(raw);
+  if (parsed === undefined && raw.trim()) return null;
+  return JSON.stringify(stableConfigValue(parsed ?? {}));
+}
+
+function configsAreSemanticallyEqual(left: string, right: string): boolean {
+  if (left === right) return true;
+  const leftCanonical = canonicalConfig(left);
+  const rightCanonical = canonicalConfig(right);
+  return leftCanonical !== null && leftCanonical === rightCanonical;
+}
+
 export type ProviderAuthMethod = {
   type: "oauth" | "api" | "cloud";
   label: string;
@@ -468,7 +499,11 @@ export function createProviderAuthStore(options: CreateProviderAuthStoreOptions)
       const raw = configFile.content?.trim()
         ? configFile.content
         : '{\n  "$schema": "https://opencode.ai/config.json"\n}\n';
-      await writeProjectConfigFile(updater(raw));
+      const next = updater(raw);
+      if (configsAreSemanticallyEqual(raw, next)) {
+        return false;
+      }
+      await writeProjectConfigFile(next);
       return true;
     }
 
