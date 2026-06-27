@@ -53,6 +53,11 @@ on:
         required: false
         type: boolean
         default: true
+      sign_windows:
+        description: "Sign Windows Electron installer with SignPath"
+        required: false
+        type: boolean
+        default: false
 
 permissions:
   actions: read
@@ -77,6 +82,7 @@ jobs:
       prerelease: ${{ steps.resolve.outputs.prerelease }}
       notarize: ${{ steps.resolve.outputs.notarize }}
       build_electron: ${{ steps.resolve.outputs.build_electron }}
+      sign_windows: ${{ steps.resolve.outputs.sign_windows }}
       publish_sidecars: ${{ steps.resolve.outputs.publish_sidecars }}
       publish_npm: ${{ steps.resolve.outputs.publish_npm }}
       publish_daytona_snapshot: ${{ steps.resolve.outputs.publish_daytona_snapshot }}
@@ -92,6 +98,7 @@ jobs:
           INPUT_PRERELEASE: ${{ github.event.inputs.prerelease }}
           INPUT_NOTARIZE: ${{ github.event.inputs.notarize }}
           INPUT_BUILD_ELECTRON: ${{ github.event.inputs.build_electron }}
+          INPUT_SIGN_WINDOWS: ${{ github.event.inputs.sign_windows }}
           INPUT_PUBLISH_SIDECARS: ${{ github.event.inputs.publish_sidecars }}
           INPUT_PUBLISH_NPM: ${{ github.event.inputs.publish_npm }}
           INPUT_PUBLISH_DAYTONA_SNAPSHOT: ${{ github.event.inputs.publish_daytona_snapshot }}
@@ -100,6 +107,7 @@ jobs:
           DEFAULT_PUBLISH_DAYTONA_SNAPSHOT: ${{ vars.RELEASE_PUBLISH_DAYTONA_SNAPSHOT }}
           DEFAULT_NOTARIZE: ${{ vars.MACOS_NOTARIZE }}
           DEFAULT_BUILD_ELECTRON: ${{ vars.RELEASE_PUBLISH_ELECTRON }}
+          DEFAULT_SIGN_WINDOWS: ${{ vars.RELEASE_SIGN_WINDOWS }}
         run: |
           set -euo pipefail
 
@@ -137,9 +145,6 @@ jobs:
               "- Electron builds use the attached latest-mac.yml updater feed."
           fi
 
-          SIGNPATH_RELEASE_NOTE='*Windows Build free code signing provided by [SignPath.io](https://about.signpath.io), certificate by [SignPath Foundation](https://signpath.org)*'
-          printf -v RELEASE_BODY '%s\n\n%s' "$RELEASE_BODY" "$SIGNPATH_RELEASE_NOTE"
-
           draft="${INPUT_DRAFT:-}"
           if [ -z "$draft" ]; then
             if [ "${GITHUB_EVENT_NAME}" = "push" ]; then
@@ -158,6 +163,19 @@ jobs:
           build_electron="${INPUT_BUILD_ELECTRON:-}"
           if [ -z "$build_electron" ]; then
             build_electron="${DEFAULT_BUILD_ELECTRON:-true}"
+          fi
+
+          sign_windows="${INPUT_SIGN_WINDOWS:-}"
+          if [ -z "$sign_windows" ]; then
+            sign_windows="${DEFAULT_SIGN_WINDOWS:-false}"
+          fi
+
+          if [ "$sign_windows" = "true" ]; then
+            SIGNPATH_RELEASE_NOTE='*Windows Build free code signing provided by [SignPath.io](https://about.signpath.io), certificate by [SignPath Foundation](https://signpath.org)*'
+            printf -v RELEASE_BODY '%s\n\n%s' "$RELEASE_BODY" "$SIGNPATH_RELEASE_NOTE"
+          else
+            WINDOWS_UNSIGNED_NOTE='*Windows installer is temporarily unsigned while production code signing is being finalized.*'
+            printf -v RELEASE_BODY '%s\n\n%s' "$RELEASE_BODY" "$WINDOWS_UNSIGNED_NOTE"
           fi
 
           publish_sidecars="${INPUT_PUBLISH_SIDECARS:-}"
@@ -185,6 +203,7 @@ jobs:
           echo "prerelease=$prerelease" >> "$GITHUB_OUTPUT"
           echo "notarize=$notarize" >> "$GITHUB_OUTPUT"
           echo "build_electron=$build_electron" >> "$GITHUB_OUTPUT"
+          echo "sign_windows=$sign_windows" >> "$GITHUB_OUTPUT"
           echo "publish_sidecars=$publish_sidecars" >> "$GITHUB_OUTPUT"
           echo "publish_npm=$publish_npm" >> "$GITHUB_OUTPUT"
           echo "publish_daytona_snapshot=$publish_daytona_snapshot" >> "$GITHUB_OUTPUT"
@@ -259,6 +278,7 @@ jobs:
     env:
       RELEASE_TAG: ${{ needs.resolve-release.outputs.release_tag }}
       MACOS_NOTARIZE: ${{ needs.resolve-release.outputs.notarize }}
+      SIGN_WINDOWS: ${{ needs.resolve-release.outputs.sign_windows }}
       SIGNPATH_ORGANIZATION_ID: ${{ secrets.SIGNPATH_ORGANIZATION_ID || vars.SIGNPATH_ORGANIZATION_ID }}
       SIGNPATH_PROJECT_SLUG: ${{ secrets.SIGNPATH_PROJECT_SLUG || vars.SIGNPATH_PROJECT_SLUG }}
       SIGNPATH_SIGNING_POLICY_SLUG: ${{ secrets.SIGNPATH_SIGNING_POLICY_SLUG || vars.SIGNPATH_SIGNING_POLICY_SLUG }}
@@ -421,7 +441,7 @@ jobs:
             --publish never
 
       - name: Validate SignPath configuration (Windows)
-        if: matrix.os_type == 'windows'
+        if: matrix.os_type == 'windows' && env.SIGN_WINDOWS == 'true'
         shell: bash
         env:
           SIGNPATH_API_TOKEN: ${{ secrets.SIGNPATH_API_TOKEN }}
@@ -445,7 +465,7 @@ jobs:
           fi
 
       - name: Stage unsigned Windows installer for SignPath
-        if: matrix.os_type == 'windows'
+        if: matrix.os_type == 'windows' && env.SIGN_WINDOWS == 'true'
         shell: bash
         run: |
           set -euo pipefail
@@ -461,7 +481,7 @@ jobs:
           cp "${installers[0]}" "$RUNNER_TEMP/signpath-unsigned/"
 
       - name: Upload unsigned Windows installer for SignPath
-        if: matrix.os_type == 'windows'
+        if: matrix.os_type == 'windows' && env.SIGN_WINDOWS == 'true'
         id: upload-unsigned-windows-installer
         uses: actions/upload-artifact@v4
         with:
@@ -471,7 +491,7 @@ jobs:
           retention-days: 1
 
       - name: Submit Windows signing request to SignPath
-        if: matrix.os_type == 'windows' && env.SIGNPATH_ARTIFACT_CONFIGURATION_SLUG == ''
+        if: matrix.os_type == 'windows' && env.SIGN_WINDOWS == 'true' && env.SIGNPATH_ARTIFACT_CONFIGURATION_SLUG == ''
         uses: signpath/github-action-submit-signing-request@v2
         with:
           api-token: ${{ secrets.SIGNPATH_API_TOKEN }}
@@ -483,7 +503,7 @@ jobs:
           output-artifact-directory: ${{ runner.temp }}/signpath-signed
 
       - name: Submit Windows signing request to SignPath (artifact configuration)
-        if: matrix.os_type == 'windows' && env.SIGNPATH_ARTIFACT_CONFIGURATION_SLUG != ''
+        if: matrix.os_type == 'windows' && env.SIGN_WINDOWS == 'true' && env.SIGNPATH_ARTIFACT_CONFIGURATION_SLUG != ''
         uses: signpath/github-action-submit-signing-request@v2
         with:
           api-token: ${{ secrets.SIGNPATH_API_TOKEN }}
@@ -496,9 +516,16 @@ jobs:
           output-artifact-directory: ${{ runner.temp }}/signpath-signed
 
       - name: Apply signed Windows installer
-        if: matrix.os_type == 'windows'
+        if: matrix.os_type == 'windows' && env.SIGN_WINDOWS == 'true'
         shell: bash
         run: node scripts/release/apply-signpath-windows-artifact.mjs "$RUNNER_TEMP/signpath-signed" apps/desktop/dist-electron
+
+      - name: Use unsigned Windows installer fallback
+        if: matrix.os_type == 'windows' && env.SIGN_WINDOWS != 'true'
+        shell: bash
+        run: |
+          set -euo pipefail
+          echo "::warning::Publishing unsigned Windows installer because SIGN_WINDOWS is not enabled."
 
       - name: Upload Electron release assets
         env:
