@@ -28,7 +28,10 @@ export default async function WorkspaceClaimPage({
 }) {
   const params = await searchParams;
   const token = firstParamValue(params.token);
+  // Optional prefill only - never a security boundary. The claim token is
+  // the only thing that authorizes accepting this claim.
+  const prefilledEmail = firstParamValue(params.email);
   const inviteEmails = parseInviteEmails(params.invite);
 
-  return <WorkspaceClaimScreen token={token} inviteEmails={inviteEmails} />;
+  return <WorkspaceClaimScreen token={token} prefilledEmail={prefilledEmail} inviteEmails={inviteEmails} />;
 }

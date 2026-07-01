@@ -124,6 +124,34 @@ try {
   assert.notEqual(claimLinkMissingFile.status, 0)
   assert.match(claimLinkMissingFile.stderr, /desktop_bootstrap_not_found/)
 
+  // cloud bootstrap-workspace --owner-email: the CLI must forward ownerEmail
+  // in the request body when provided, and must NOT send the field at all
+  // when omitted (so older Den APIs without the field stay unaffected).
+  await withStubDenApi(
+    () => ({
+      ok: true,
+      organization: { id: "org_test", name: "Stub Org", slug: "org_test", status: "provisional" },
+      setup: { id: "wbt_test", expiresAt: "2030-01-01T00:00:00.000Z" },
+      skill: { id: "skl_test", title: "First OpenWork Skill", output: "OPENWORK_BOOTSTRAP_SKILL_TRIGGERED" },
+      claimLinks: [{ id: "wcl_test", role: "owner", token: "stub-token", url: "https://example.test/workspace-claim?token=stub-token", expiresAt: "2030-01-01T00:00:00.000Z" }],
+    }),
+    async (baseUrl, getRequestBody) => {
+      const withEmail = await spawnAsync(
+        process.execPath,
+        [cli, "cloud", "bootstrap-workspace", "--base-url", baseUrl, "--workspace-name", "Owner Email Test", "--owner-email", "founder@example.com", "--json"],
+      )
+      assert.equal(withEmail.status, 0, withEmail.stderr)
+      assert.equal(getRequestBody().ownerEmail, "founder@example.com")
+
+      const withoutEmail = await spawnAsync(
+        process.execPath,
+        [cli, "cloud", "bootstrap-workspace", "--base-url", baseUrl, "--workspace-name", "No Email Test", "--json"],
+      )
+      assert.equal(withoutEmail.status, 0, withoutEmail.stderr)
+      assert.equal("ownerEmail" in getRequestBody(), false, "ownerEmail must be omitted entirely, not sent as undefined/null")
+    },
+  )
+
   // cloud bootstrap-workspace --teammate-emails: the CLI must forward
   // teammateEmails in the request body when provided, and must NOT send the
   // field at all when omitted (so older Den APIs without the field stay
@@ -157,6 +185,7 @@ try {
   // — that string only exists in this test fixture, not in stdout redaction code.
   const helpOutput = spawnSync(process.execPath, [cli, "--help"], { encoding: "utf8" })
   assert.match(helpOutput.stdout, /cloud claim-link/)
+  assert.match(helpOutput.stdout, /--owner-email/)
   assert.match(helpOutput.stdout, /--teammate-emails/)
 } finally {
   rmSync(temp, { recursive: true, force: true })
