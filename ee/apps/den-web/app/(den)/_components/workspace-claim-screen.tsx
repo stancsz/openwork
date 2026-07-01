@@ -52,6 +52,15 @@ function parseAcceptedClaim(payload: unknown): AcceptedClaim | null {
   };
 }
 
+function getOpenworkUrl(payload: unknown): string | null {
+  if (typeof payload !== "object" || payload === null) {
+    return null;
+  }
+
+  const url = (payload as { openworkUrl?: unknown }).openworkUrl;
+  return typeof url === "string" && url.trim() ? url : null;
+}
+
 function pluralize(count: number, noun: string): string {
   return `${count} ${noun}${count === 1 ? "" : "s"}`;
 }
@@ -88,6 +97,10 @@ export function WorkspaceClaimScreen({
   const { user, sessionHydrated, signOut } = useDenFlow();
   const [claimBusy, setClaimBusy] = useState(false);
   const [claimError, setClaimError] = useState<string | null>(null);
+  const [claimedOrg, setClaimedOrg] = useState<AcceptedClaim | null>(null);
+  const [handoffBusy, setHandoffBusy] = useState(false);
+  const [handoffError, setHandoffError] = useState<string | null>(null);
+  const [handoffAttempted, setHandoffAttempted] = useState(false);
   const [inviteSummary, setInviteSummary] = useState<string | null>(null);
 
   // Persist the token so sign-in / sign-up returns the user to this page.
@@ -138,8 +151,6 @@ export function WorkspaceClaimScreen({
         window.sessionStorage.removeItem(PENDING_WORKSPACE_CLAIM_STORAGE_KEY);
       }
 
-      const accepted = parseAcceptedClaim(payload);
-
       if (inviteEmails.length > 0) {
         // The claim above just made this account the owner (and set it as
         // the session's active organization), so it can now invite
@@ -152,12 +163,55 @@ export function WorkspaceClaimScreen({
         await new Promise((resolveDelay) => setTimeout(resolveDelay, 1400));
       }
 
-      router.replace(getOrgDashboardRoute(accepted?.organizationSlug ?? null));
+      // Don't navigate away immediately - offer to sign the already-running
+      // desktop app in with zero retyped credentials, reusing the same
+      // one-time handoff grant the normal "connect desktop" flow already
+      // uses. The human chooses; we never auto-redirect them into an OS
+      // "open this link?" prompt without asking.
+      setClaimedOrg(parseAcceptedClaim(payload));
     } catch (error) {
       setClaimError(error instanceof Error ? error.message : "Could not claim the workspace.");
     } finally {
       setClaimBusy(false);
     }
+  }
+
+  async function handleOpenDesktop() {
+    setHandoffBusy(true);
+    setHandoffError(null);
+    setHandoffAttempted(true);
+
+    try {
+      const { response, payload } = await requestJson(
+        "/v1/auth/desktop-handoff",
+        {
+          method: "POST",
+          body: JSON.stringify({ desktopScheme: "openwork" }),
+        },
+        12000,
+      );
+
+      if (!response.ok) {
+        setHandoffError(getErrorMessage(payload, `Could not prepare a desktop sign-in link (${response.status}).`));
+        return;
+      }
+
+      const openworkUrl = getOpenworkUrl(payload);
+      if (!openworkUrl) {
+        setHandoffError("Desktop sign-in succeeded, but no app link was returned.");
+        return;
+      }
+
+      window.location.assign(openworkUrl);
+    } catch (error) {
+      setHandoffError(error instanceof Error ? error.message : "Could not open OpenWork.");
+    } finally {
+      setHandoffBusy(false);
+    }
+  }
+
+  function continueInBrowser() {
+    router.replace(getOrgDashboardRoute(claimedOrg?.organizationSlug ?? null));
   }
 
   if (!token) {
@@ -228,6 +282,50 @@ export function WorkspaceClaimScreen({
             toggleActionLabel: "Create one",
           }}
         />
+      </section>
+    );
+  }
+
+  // Claimed: offer to sign the desktop app in with zero retyped credentials,
+  // or continue in the browser.
+  if (claimedOrg) {
+    return (
+      <section className="den-page py-4 lg:py-6">
+        <div className="den-frame grid max-w-[44rem] gap-6 p-6 md:p-8">
+          <div className="grid gap-2">
+            <p className="den-eyebrow">OpenWork Cloud</p>
+            <h1 className="den-title-xl max-w-[16ch]">You own {claimedOrg.organizationName} now.</h1>
+            <p className="den-copy">
+              If OpenWork is already open on this machine, sign it in automatically - no password to type again.
+            </p>
+          </div>
+
+          <div className="flex flex-wrap gap-3">
+            <button
+              type="button"
+              className="den-button-primary w-full sm:w-auto"
+              onClick={() => void handleOpenDesktop()}
+              disabled={handoffBusy}
+            >
+              {handoffBusy ? "Opening OpenWork..." : "Open OpenWork"}
+            </button>
+            <button
+              type="button"
+              className="den-button-secondary w-full sm:w-auto"
+              onClick={continueInBrowser}
+              disabled={handoffBusy}
+            >
+              Continue in browser instead
+            </button>
+          </div>
+
+          {handoffAttempted && !handoffError ? (
+            <p className="den-copy text-sm">
+              Opening OpenWork now. If nothing happens (for example, the app isn&apos;t installed on this machine), use &quot;Continue in browser instead&quot;.
+            </p>
+          ) : null}
+          {handoffError ? <div className="den-notice is-error">{handoffError}</div> : null}
+        </div>
       </section>
     );
   }
