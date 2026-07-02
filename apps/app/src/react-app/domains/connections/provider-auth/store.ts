@@ -68,7 +68,6 @@ import {
   isCloudProviderOutOfSync,
 } from "./cloud-provider-config";
 import { refreshDesktopCloudSync } from "../../../../app/cloud/desktop-cloud-sync";
-import { writeCloudProvidersSyncedAt } from "../../../../app/cloud/sync/sync-state";
 import { dispatchNewProviders } from "../../../../app/lib/provider-events";
 import {
   isDesktopProviderBlocked,
@@ -76,12 +75,7 @@ import {
 } from "../../../../app/cloud/desktop-app-restrictions";
 
 type ProviderReturnFocusTarget = "none" | "composer";
-type CloudProviderSyncReason =
-  | "sign_in"
-  | "app_launch"
-  | "interval"
-  | "settings_cloud_opened"
-  | "manual";
+type CloudProviderSyncReason = "sign_in" | "app_launch" | "interval" | "settings_cloud_opened";
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
@@ -1320,15 +1314,15 @@ export function createProviderAuthStore(options: CreateProviderAuthStoreOptions)
           }
         }
       }
-      // `false` means the provider block is already identical — a valid
-      // reconcile outcome (e.g. re-import after a lost baseline). Continue so
-      // the import record and credentials still get refreshed.
-      await updateProjectConfigFile((raw) =>
+      const updatedConfig = await updateProjectConfigFile((raw) =>
         formatConfigWithCloudProvider(raw, provider, localProviderId, {
           previousProviderId: existingImported?.providerId ?? null,
           disabledProviders: options.disabledProviders(),
         }),
       );
+      if (!updatedConfig) {
+        throw new Error("Could not update opencode.jsonc for this workspace.");
+      }
 
       const nextImportedProviders = {
         ...state.importedCloudProviders,
@@ -1391,13 +1385,12 @@ export function createProviderAuthStore(options: CreateProviderAuthStoreOptions)
           throw error;
         }
       }
-      // `false` here means the rewrite produced no change — the provider
-      // block is already absent (e.g. a previous partial removal). Treat it
-      // as success so removal stays idempotent; a stale import record must
-      // not fail the whole sync sweep forever.
-      await updateProjectConfigFile((raw) =>
+      const updatedConfig = await updateProjectConfigFile((raw) =>
         formatConfigWithoutCloudProvider(raw, imported.providerId, options.disabledProviders()),
       );
+      if (!updatedConfig) {
+        throw new Error("Could not update opencode.jsonc for this workspace.");
+      }
 
       const nextImportedProviders = { ...state.importedCloudProviders };
       delete nextImportedProviders[cloudProviderId];
@@ -1544,8 +1537,6 @@ export function createProviderAuthStore(options: CreateProviderAuthStoreOptions)
     if (failures.length > 0) {
       throw new Error(failures.join("\n"));
     }
-
-    writeCloudProvidersSyncedAt();
   }
 
   async function runCloudProviderSync(reason: CloudProviderSyncReason) {
@@ -1554,17 +1545,10 @@ export function createProviderAuthStore(options: CreateProviderAuthStoreOptions)
       return cloudProviderSyncInFlight;
     }
 
-    if (reason === "manual") {
-      // A user-initiated sync (command palette) reports through
-      // providerAuthError; clear stale state so the caller can read the
-      // outcome of this run.
-      setStateField("providerAuthError", null);
-    }
-
     const request = performCloudProviderSync(reason)
       .catch((error) => {
         const message = logCloudProviderSyncError(reason, error);
-        if (reason === "settings_cloud_opened" || reason === "manual") {
+        if (reason === "settings_cloud_opened") {
           setStateField("providerAuthError", message);
         }
       })
