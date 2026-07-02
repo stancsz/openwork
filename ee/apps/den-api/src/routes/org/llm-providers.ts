@@ -14,6 +14,7 @@ import { describeRoute } from "hono-openapi"
 import { z } from "zod"
 import { db } from "../../db.js"
 import { CustomProviderConfigError, normalizeCustomProviderConfig } from "../../llm/custom-provider.js"
+import { probeEndpoint, verifyModels } from "../../llm/endpoint-probe.js"
 import {
   ProviderCredentialError,
   decodeProviderCredential,
@@ -99,6 +100,30 @@ const llmProviderWriteSchema = z.object({
     })
   }
 })
+
+const endpointProbeRequestSchema = z.object({
+  api: z.string().trim().min(1).max(2048),
+  apiKey: z.string().trim().max(65535).optional(),
+  modelIds: z.array(z.string().trim().min(1).max(255)).max(8).optional(),
+})
+
+const endpointProbeResponseSchema = z.object({
+  result: z.object({
+    ok: z.boolean(),
+    vendor: z.enum(["azure", "openai-compatible"]),
+    normalizedApi: z.string().nullable(),
+    attempted: z.array(z.string()),
+    models: z.array(z.object({ id: z.string() })),
+    hint: z.string().nullable(),
+    status: z.number().nullable(),
+  }),
+  verifications: z.array(z.object({
+    id: z.string(),
+    status: z.enum(["ok", "adjusted", "failed"]),
+    npm: z.enum(["@ai-sdk/openai-compatible", "@ai-sdk/openai"]),
+    message: z.string().nullable(),
+  })).optional(),
+}).meta({ ref: "LlmProviderTestConnectionResponse" })
 
 const providerCatalogListResponseSchema = z.object({
   providers: z.array(z.object({}).passthrough()),
@@ -305,9 +330,16 @@ async function normalizeLlmProviderInput(
 
     const requestedModelIds = [...new Set(input.modelIds ?? [])]
     const modelsById = new Map(provider.models.map((model) => [model.id, model]))
+    // Azure model lists come from the resource's *deployments*, which admins
+    // can name anything — accept ids outside the models.dev catalog for
+    // Azure providers instead of rejecting the save.
+    const allowDeploymentIds = provider.npm === "@ai-sdk/azure"
     const models = requestedModelIds.map((modelId) => {
       const model = modelsById.get(modelId)
       if (!model) {
+        if (allowDeploymentIds) {
+          return { id: modelId, name: modelId, config: { id: modelId, name: modelId } }
+        }
         throw createFailure(404, "model_not_found", `Model ${modelId} is not available for ${provider.name}.`)
       }
       return model
@@ -525,6 +557,35 @@ async function loadLlmProviders(input: {
 }
 
 export function registerOrgLlmProviderRoutes<T extends { Variables: OrgRouteVariables & Partial<MemberTeamsContext> }>(app: Hono<T>) {
+  app.post(
+    "/v1/llm-providers/test-connection",
+    describeRoute({
+      tags: ["LLM Providers"],
+      summary: "Test a custom LLM provider endpoint",
+      description: "Probes an OpenAI-compatible endpoint (Azure AI Foundry, LiteLLM, vLLM, gateways) with the given credential: normalizes common base-URL mistakes, calls GET /models, and returns the model ids the endpoint actually serves — on Azure these are the deployment names. Nothing is stored.",
+      responses: {
+        200: jsonResponse("Probe completed (ok=false carries a human hint).", endpointProbeResponseSchema),
+        400: jsonResponse("The probe request was invalid.", invalidRequestSchema),
+        401: jsonResponse("The caller must be signed in to test provider endpoints.", unauthorizedSchema),
+      },
+    }),
+    orgMemberRoute(),
+    jsonValidator(endpointProbeRequestSchema),
+    async (c) => {
+      const input = c.req.valid("json")
+      const result = await probeEndpoint({ api: input.api, apiKey: input.apiKey ?? "" })
+      if (result.ok && result.normalizedApi && input.modelIds?.length) {
+        const verifications = await verifyModels({
+          api: result.normalizedApi,
+          apiKey: input.apiKey ?? "",
+          modelIds: input.modelIds,
+        })
+        return c.json({ result, verifications })
+      }
+      return c.json({ result })
+    },
+  )
+
   app.get(
     "/v1/llm-provider-catalog",
     describeRoute({
