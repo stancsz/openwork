@@ -30,6 +30,7 @@ import {
   replaceExternalMcpConnectionAccess,
   type ExternalMcpConnectionRow,
 } from "../../capability-sources/external-mcp-connections.js"
+import { memberFacingMcpConnectionsEnabled } from "../../capability-sources/external-mcp-rollout.js"
 import { getConnectedAccount } from "../../capability-sources/oauth-credentials.js"
 import { assertPublicUrl } from "../../capability-sources/url-guard.js"
 import type { MemberTeamSummary } from "../../orgs.js"
@@ -223,6 +224,13 @@ export function registerMcpConnectionRoutes<T extends { Variables: OrgRouteVaria
         const connections = await Promise.all(rows.map((row) =>
           toConnectionResponse(row, { callerOrgMembershipId: payload.currentMember.id, includeAccess: true })))
         return c.json({ connections })
+      }
+
+      // Staged rollout: gated deployments return an empty list for
+      // non-opted-in orgs — indistinguishable from "nothing published", on
+      // every desktop version in the field (see external-mcp-rollout.ts).
+      if (!memberFacingMcpConnectionsEnabled(payload.organization.metadata, { gatingEnabled: env.mcpConnectionsGatingEnabled })) {
+        return c.json({ connections: [] })
       }
 
       const memberTeams: MemberTeamSummary[] = c.get("memberTeams") ?? []
@@ -432,7 +440,7 @@ export function registerMcpConnectionRoutes<T extends { Variables: OrgRouteVaria
         if (!admin.ok) return c.json(admin.response, orgAccessFailureStatus(admin.response))
       } else {
         // Per-member: any member GRANTED the connection may connect their own
-        // account (that's the whole point); admins may too.
+        // account (that is the whole point); admins may too.
         const memberTeams: MemberTeamSummary[] = c.get("memberTeams") ?? []
         const isAdmin = ensureOrganizationAdmin(c, "").ok
         const canUse = await memberCanUseExternalMcpConnection({
@@ -519,8 +527,11 @@ export function registerMcpConnectionRoutes<T extends { Variables: OrgRouteVaria
 
 function connectCallbackPage(input: { ok: true; name: string } | { ok: false; name: string; message: string }): string {
   const title = input.ok ? "Connected" : "Connection failed"
+  const openWorkUrl = "openwork://settings/extensions"
   const body = input.ok
-    ? `<p>${escapeHtml(input.name)} is connected. You can close this tab and return to Den.</p>`
+    ? `<p>${escapeHtml(input.name)} is connected. You can return to OpenWork now.</p>
+      <p><a href="${openWorkUrl}" style="display:inline-block; margin-top:16px; border-radius:10px; background:#0f172a; color:white; padding:10px 14px; text-decoration:none; font-weight:600;">Open OpenWork</a></p>
+      <script>setTimeout(() => { window.location.href = "${openWorkUrl}" }, 500)</script>`
     : `<p>Couldn't connect ${escapeHtml(input.name)}: ${escapeHtml(input.message)}</p>`
   return `<!doctype html>
 <html>

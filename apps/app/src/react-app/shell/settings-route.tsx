@@ -51,6 +51,7 @@ import {
   workspaceLabel,
 } from "@/react-app/shell/route-workspaces";
 import { createConnectionsStore, useConnectionsStoreSnapshot } from "@/react-app/domains/connections/store";
+import { useOrgMcpConnections } from "@/react-app/domains/connections/use-org-mcp-connections";
 import { createOpenworkServerStore, useOpenworkServerStoreSnapshot } from "@/react-app/domains/connections/openwork-server-store";
 import { createProviderAuthStore, useProviderAuthStoreSnapshot } from "@/react-app/domains/connections/provider-auth/store";
 import ProviderAuthModal from "@/react-app/domains/connections/provider-auth/provider-auth-modal";
@@ -661,6 +662,7 @@ function SettingsRouteContent(props: SettingsSurfaceProps = {}) {
   const connectionsSnapshot = useConnectionsStoreSnapshot(connectionsStore);
   const providerAuthSnapshot = useProviderAuthStoreSnapshot(providerAuthStore);
   useExtensionsStoreSnapshot(extensionsStore);
+  const orgMcpConnections = useOrgMcpConnections();
 
   const openworkServerStatusForMcp = openworkServerSnapshot.openworkServerStatus;
   useEffect(() => {
@@ -1653,10 +1655,11 @@ function SettingsRouteContent(props: SettingsSurfaceProps = {}) {
       importedCloudPlugins: extensionsStore.importedCloudPlugins(),
       pendingCloudPluginChanges: extensionsStore.pendingCloudPluginChanges(),
       cloudMarketplaces: extensionsStore.cloudOrgMarketplaces(),
+      orgMcpConnections: orgMcpConnections.connections,
       enablementContext,
       isBuiltInConnected: extensionController.isConnected,
     }),
-    [connectionsSnapshot.mcpServers, connectionsStore.quickConnect, enablementContext, extensionController, extensionsStore],
+    [connectionsSnapshot.mcpServers, connectionsStore.quickConnect, enablementContext, extensionController, extensionsStore, orgMcpConnections.connections],
   );
   const routeOpenworkStatus = openworkClient ? "connected" : "disconnected";
   const notFoundRouteError = !loading && routeWorkspaceId && !selectedWorkspace
@@ -2085,6 +2088,7 @@ function SettingsRouteContent(props: SettingsSurfaceProps = {}) {
               });
               void extensionsStore.refreshPlugins();
               void extensionsStore.refreshCloudOrgMarketplaces({ force: true });
+              void orgMcpConnections.refresh();
             }}
             mcpView={
               <McpView
@@ -2099,6 +2103,7 @@ function SettingsRouteContent(props: SettingsSurfaceProps = {}) {
                 selectedMcp={connectionsSnapshot.selectedMcp}
                 setSelectedMcp={(name) => connectionsStore.setSelectedMcp(name)}
                 quickConnect={extensionItems.quickConnectEntries}
+                installedOrgMcpItems={extensionItems.orgMcpConnectionItems.filter((item) => item.installState === "installed")}
                 enablementContext={enablementContext}
                 builtInExtensionsDisabled={builtInExtensionsDisabled}
                 connectMcp={(entry) => {
@@ -2143,6 +2148,11 @@ function SettingsRouteContent(props: SettingsSurfaceProps = {}) {
                 configSlotForBuiltIn={extensionController.configSlotForEntry}
                 isBuiltInConnected={extensionController.isConnected}
                 extensionItems={extensionItems.items}
+                orgMcpConnectingId={orgMcpConnections.connectingId}
+                onConnectOrgMcp={(connectionId) => {
+                  void orgMcpConnections.connect(connectionId);
+                }}
+                refreshOrgMcpConnections={orgMcpConnections.refresh}
                 setBuiltInEnabled={setOpenWorkExtensionEnabled}
               />
             }
@@ -2168,6 +2178,11 @@ function SettingsRouteContent(props: SettingsSurfaceProps = {}) {
             configSlotForBuiltIn={extensionController.configSlotForEntry}
             isBuiltInConnected={extensionController.isConnected}
             extensionItems={extensionItems.items}
+            orgMcpConnectingId={orgMcpConnections.connectingId}
+            onConnectOrgMcp={(connectionId) => {
+              void orgMcpConnections.connect(connectionId);
+            }}
+            refreshOrgMcpConnections={orgMcpConnections.refresh}
             setBuiltInEnabled={setOpenWorkExtensionEnabled}
           />
         );
