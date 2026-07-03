@@ -108,7 +108,7 @@ async function runFlow(flow, { cdpBaseUrl, outDir, env }) {
     const target = await pickAppTarget(cdpBaseUrl);
     client = await connect(debuggerUrlFor(cdpBaseUrl, target));
   }
-  const ctx = new EvalContext({ client, outDir, flowId: flow.id, env });
+  const ctx = new EvalContext({ client, outDir, flowId: flow.id, env, cdpBaseUrl });
 
   try {
     // Force light mode by default so screenshot evidence is readable. Flows
