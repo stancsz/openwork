@@ -140,7 +140,10 @@ export function buildOperations(config) {
     {
       id: "reroute:welcome-override",
       type: "writeFile",
-      target: "brand/overrides/welcome-page.tsx",
+      // Generated INSIDE apps/app/src so React (`react/jsx-runtime`) and the
+      // `@/` alias resolve during a strict production build. Namespaced +
+      // gitignored, so it's ad-hoc and never committed.
+      target: "apps/app/src/brandkit-generated/welcome-page.tsx",
       content: renderWelcomeOverride(config.welcome),
     },
     {
@@ -273,7 +276,7 @@ function ShowcasePanel() {
       <div className="grid grid-cols-2 gap-2">
         {FEATURES.map((cap) => (
           <div key={cap.title} className="flex flex-col gap-2.5 rounded-xl border border-border p-3">
-            <div className="size-4 rounded-[5px] bg-[var(--dls-accent,theme(colors.foreground))]" />
+            <div className="size-4 rounded-[5px] bg-[var(--dls-accent)]" />
             <div className="text-sm font-medium leading-tight text-foreground">{cap.title}</div>
             <div className="text-xs leading-snug text-muted-foreground">{cap.desc}</div>
           </div>
@@ -362,7 +365,7 @@ export function WelcomePage({
             {/* ---- Right: showcase card ---- */}
             <div className="hidden lg:flex lg:w-[55%] lg:items-center lg:justify-center lg:p-6">
               <div className="relative w-full max-w-xl overflow-hidden rounded-3xl border border-border">
-                <div className="absolute inset-0 z-0 bg-[var(--dls-accent,theme(colors.muted.DEFAULT))] opacity-10" />
+                <div className="absolute inset-0 z-0 bg-[var(--dls-accent)] opacity-10" />
                 <div className="relative z-10 m-3 rounded-2xl bg-background p-7">
                   <ShowcasePanel />
                 </div>
@@ -404,7 +407,7 @@ const REPO_ROOT = resolve(APP_ROOT, "..", "..");
 const reroute = brandkitReroute({
   overrides: {
     [resolve(APP_ROOT, "src/react-app/domains/onboarding/welcome-page.tsx")]:
-      resolve(REPO_ROOT, "brand/overrides/welcome-page.tsx"),
+      resolve(APP_ROOT, "src/brandkit-generated/welcome-page.tsx"),
   },
 });
 

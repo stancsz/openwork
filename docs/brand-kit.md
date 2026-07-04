@@ -24,7 +24,7 @@ reverted with `--revert`. Because our commits never touch upstream's files,
 
 Only **kit source** is committed (the files above). Everything `apply.mjs`
 *produces* — `opencode.json`, `apps/app/vite.brandkit.config.mts`, and
-`brand/overrides/*.tsx` — is **generated on the fly and never committed**.
+`apps/app/src/brandkit-generated/*.tsx` — is **generated on the fly and never committed**.
 `apply.mjs` registers those paths in `.git/info/exclude` (a local, untracked
 ignore), which means they can't be committed by accident **and** `git pull
 upstream` can never collide with them — even if upstream later adds its own
@@ -96,7 +96,7 @@ intercepts the import and serves a brand-owned file instead. The original
 How it's wired:
 
 - `brand.config.json` → `welcome` block (steps, feature cards, showcase title, `showSignIn`).
-- `apply.mjs` generates `brand/overrides/welcome-page.tsx` from that config.
+- `apply.mjs` generates `apps/app/src/brandkit-generated/welcome-page.tsx` from that config.
 - `apply.mjs` generates `apps/app/vite.brandkit.config.mts` — an **additive** file
   (the app's own `vite.config.ts` is untouched) that loads the real config and
   registers the reroute plugin.
@@ -111,7 +111,7 @@ How it's wired:
 To reroute another surface, add its target→override pair to the `overrides` map in
 the generated Vite config (or extend the generator in `operations.mjs`). To take
 full manual control of the welcome page, stop editing `brand.config.json` and edit
-`brand/overrides/welcome-page.tsx` directly (but note `apply.mjs` regenerates it).
+`apps/app/src/brandkit-generated/welcome-page.tsx` directly (but note `apply.mjs` regenerates it).
 
 ## Adding a new rebranding rule
 
