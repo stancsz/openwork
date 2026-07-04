@@ -1,0 +1,142 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "title": "OpenWork brand kit config",
+  "description": "Single source of truth a distributor edits to rebrand OpenWork. Consumed by scripts/brandkit/apply.mjs at build time. Nothing here is committed into upstream-tracked source files.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["brand"],
+  "properties": {
+    "$schema": { "type": "string" },
+    "brand": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["name", "accentColor"],
+      "properties": {
+        "name": {
+          "type": "string",
+          "description": "User-facing product name. Replaces the standalone word 'OpenWork' in UI strings, window title, and packaged app name."
+        },
+        "shortName": {
+          "type": "string",
+          "description": "Optional short name for tight spaces. Defaults to `name`."
+        },
+        "accentColor": {
+          "type": "string",
+          "description": "Radix color family used as the UI accent (maps to --dls-accent* CSS vars).",
+          "enum": [
+            "gray", "gold", "bronze", "brown", "yellow", "amber", "orange",
+            "tomato", "red", "ruby", "crimson", "pink", "plum", "purple",
+            "violet", "iris", "indigo", "blue", "cyan", "teal", "jade",
+            "green", "grass", "lime", "mint", "sky"
+          ]
+        },
+        "assets": {
+          "type": "object",
+          "description": "Repo-relative paths to the distributor's brand assets. Missing files are skipped with a warning so a first run still succeeds.",
+          "additionalProperties": false,
+          "properties": {
+            "mark": { "type": "string", "description": "Square glyph, overwrites apps/app/public/openwork-mark.svg" },
+            "logo": { "type": "string", "description": "Wordmark, overwrites apps/app/public/openwork-logo.svg" },
+            "logoSquare": { "type": "string", "description": "Overwrites apps/app/public/openwork-logo-square.svg" },
+            "favicon32": { "type": "string" },
+            "favicon16": { "type": "string" },
+            "appleTouchIcon": { "type": "string" },
+            "desktopIconPng": { "type": "string", "description": "Overwrites apps/desktop/resources/icons/icon.png" },
+            "desktopIconIco": { "type": "string", "description": "Overwrites apps/desktop/resources/icons/icon.ico" },
+            "desktopIconIcns": { "type": "string", "description": "Overwrites apps/desktop/resources/icons/icon.icns" }
+          }
+        }
+      }
+    },
+    "desktop": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "appId": {
+          "type": "string",
+          "description": "Reverse-DNS bundle id for the packaged app (electron-builder appId)."
+        },
+        "deepLinkScheme": {
+          "type": "string",
+          "description": "Custom URL scheme for deep links (replaces 'openwork'). Lowercase, no ':' or '//'.",
+          "pattern": "^[a-z][a-z0-9-]*$"
+        }
+      }
+    },
+    "providers": {
+      "type": "object",
+      "additionalProperties": false,
+      "description": "Which LLM providers the distributor allows. End users still enter their own API key.",
+      "properties": {
+        "allowed": {
+          "type": "array",
+          "description": "OpenCode provider ids to expose (e.g. 'openrouter', 'anthropic', 'openai'). Others are hidden from the picker.",
+          "items": { "type": "string" },
+          "minItems": 1
+        },
+        "default": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "providerID": { "type": "string" },
+            "modelID": { "type": "string" }
+          }
+        }
+      }
+    },
+    "cloud": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "hide": {
+          "type": "boolean",
+          "description": "Hide all OpenWork Cloud / Den surfaces (cloud settings group, sign-in entry points, workers)."
+        },
+        "requireSignin": {
+          "type": "boolean",
+          "description": "Whether to force account sign-in. Brand-kit default is false."
+        }
+      }
+    },
+    "welcome": {
+      "type": "object",
+      "additionalProperties": false,
+      "description": "Content for the brand-owned welcome page. Generated into brand/overrides/welcome-page.tsx and served via the reroute plugin — the app's original welcome-page.tsx is never modified.",
+      "properties": {
+        "showSignIn": {
+          "type": "boolean",
+          "description": "Show the 'Joining a team? Sign in' link. Default false."
+        },
+        "showcaseTitle": {
+          "type": "array",
+          "description": "Heading for the right-hand showcase panel, one array entry per line.",
+          "items": { "type": "string" }
+        },
+        "steps": {
+          "type": "array",
+          "description": "The numbered 'Get started' steps.",
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "properties": {
+              "title": { "type": "string" },
+              "desc": { "type": "string" }
+            }
+          }
+        },
+        "features": {
+          "type": "array",
+          "description": "Feature cards in the showcase panel.",
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "properties": {
+              "title": { "type": "string" },
+              "desc": { "type": "string" }
+            }
+          }
+        }
+      }
+    }
+  }
+}

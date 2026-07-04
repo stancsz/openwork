@@ -1,0 +1,52 @@
+{
+  "$schema": "./brand.schema.json",
+  "brand": {
+    "name": "Acme Work",
+    "shortName": "Acme",
+    "accentColor": "iris",
+    "assets": {
+      "mark": "brand/mark.svg",
+      "logo": "brand/logo.svg",
+      "logoSquare": "brand/logo-square.svg",
+      "favicon32": "brand/favicon-32x32.png",
+      "favicon16": "brand/favicon-16x16.png",
+      "appleTouchIcon": "brand/apple-touch-icon.png",
+      "desktopIconPng": "brand/icon.png",
+      "desktopIconIco": "brand/icon.ico",
+      "desktopIconIcns": "brand/icon.icns"
+    }
+  },
+  "desktop": {
+    "appId": "com.acme.work",
+    "deepLinkScheme": "acmework"
+  },
+  "providers": {
+    "allowed": ["openrouter"],
+    "default": { "providerID": "openrouter", "modelID": "anthropic/claude-3.5-sonnet" }
+  },
+  "cloud": {
+    "hide": true,
+    "requireSignin": false
+  },
+  "welcome": {
+    "showSignIn": false,
+    "title": "Get more done with Acme Work",
+    "subtitle": "Your AI workspace for everyday tasks.",
+    "getStartedHeading": "How it works",
+    "getStartedLabel": "Choose a folder →",
+    "showcaseTitle": ["Your computer,", "but it works for you."],
+    "steps": [
+      { "title": "Pick a folder", "desc": "Choose any folder on your machine to get started." },
+      { "title": "Chat", "desc": "Describe what you need. Acme Work handles the rest." },
+      { "title": "Interact", "desc": "Review results, approve actions, and iterate." }
+    ],
+    "features": [
+      { "title": "Edit spreadsheets", "desc": "Create, clean, and transform CSV and Excel files." },
+      { "title": "Control your browser", "desc": "Automate the built-in browser for repetitive web tasks." },
+      { "title": "Organize files", "desc": "Read, write, and manage files and folders." },
+      { "title": "Automate tasks", "desc": "Build reusable workflows with skills and commands." },
+      { "title": "Generate content", "desc": "Draft documents, emails, and reports." },
+      { "title": "Connect to APIs", "desc": "Plug into external services and tools via MCP." }
+    ]
+  }
+}
