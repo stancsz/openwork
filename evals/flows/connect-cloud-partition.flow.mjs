@@ -1,7 +1,7 @@
 import { execSync } from "node:child_process";
 import { loadVoiceoverParagraphs } from "../runner/voiceover.mjs";
 
-const FLOW_ID = "connect-delivery-switch";
+const FLOW_ID = "connect-cloud-partition";
 const vo = await loadVoiceoverParagraphs(FLOW_ID);
 
 const DEN_API_URL = cleanBaseUrl(process.env.OPENWORK_EVAL_DEN_API_URL);
@@ -11,28 +11,31 @@ const ADMIN_PASSWORD = process.env.OPENWORK_EVAL_DEMO_PASSWORD?.trim() || "OpenW
 const PLATFORM_ADMIN_EMAIL = process.env.OPENWORK_EVAL_PLATFORM_ADMIN_EMAIL?.trim() || "";
 const PLATFORM_ADMIN_PASSWORD = process.env.OPENWORK_EVAL_PLATFORM_ADMIN_PASSWORD?.trim() || "";
 const MARK_VERIFIED_CMD = process.env.OPENWORK_EVAL_MARK_VERIFIED_CMD?.trim() || "";
-const WORKSPACE_PATH = "/tmp/openwork-connect-delivery-switch";
+const WORKSPACE_PATH = "/tmp/openwork-connect-cloud-partition";
 const RUN_TAG = Date.now();
-const SEED_PREFIX = "connect-delivery-switch";
+const SEED_PREFIX = "connect-cloud-partition";
 const MARKETPLACE_NAME = `${SEED_PREFIX}-${RUN_TAG}`;
-const PLUGIN_NAME = `Connect Delivery Probe ${RUN_TAG}`;
-const PLUGIN_DESCRIPTION = "A seeded marketplace plugin used to prove Connect delivery.";
-const SKILL_NAME = `connect-delivery-probe-${RUN_TAG}`;
-const SKILL_DESCRIPTION = "Reports that marketplace content runs through Connect.";
+const READY_PLUGIN_NAME = `Partition Ready ${RUN_TAG}`;
+const NEEDS_SETUP_PLUGIN_NAME = `Partition Needs Setup ${RUN_TAG}`;
+const DESKTOP_PLUGIN_NAME = `Partition Desktop Only ${RUN_TAG}`;
+const CONNECTION_NAME = `Partition Personal MCP ${RUN_TAG}`;
+const CONNECTION_URL = `https://personal-${RUN_TAG}.example.test/mcp`;
+const UNMATCHED_MCP_URL = `https://unmatched-${RUN_TAG}.example.test/mcp`;
 
 const state = {
   orgAdminToken: null,
   platformAdminToken: null,
   orgId: null,
   marketplaceId: null,
-  pluginId: null,
+  pluginIds: [],
+  connectionId: null,
 };
 
 export default {
   id: FLOW_ID,
-  title: "Connect-mode delivery switch moves marketplace plugins from desktop import to the cloud rail",
+  title: "Connect partitions cloud-runnable organization capabilities from desktop marketplace installs",
   kind: "user-facing",
-  spec: "evals/voiceovers/connect-delivery-switch.md",
+  spec: "evals/voiceovers/connect-cloud-partition.md",
   requiredEnv: [
     "OPENWORK_EVAL_DEN_API_URL",
     "OPENWORK_EVAL_PLATFORM_ADMIN_EMAIL",
@@ -43,27 +46,25 @@ export default {
     {
       name: "Frame 1",
       run: async (ctx) => {
-        await ctx.prove("With Connect off, Extensions still exposes the installable Marketplace pane", {
+        await ctx.prove("Connect lists cloud-runnable marketplace content and excludes desktop-only plugins", {
           voiceover: vo[0],
           action: async () => {
-            await prepareSignedInDesktopWithConnectOff(ctx);
-            await openExtensionsMarketplace(ctx);
-            await waitForMarketplacePlugin(ctx, PLUGIN_NAME);
+            await prepareSignedInDesktopWithConnectOn(ctx);
+            await navigateToSettingsTab(ctx, "connect");
+            await waitForConnectText(ctx, READY_PLUGIN_NAME);
+            await scrollConnectGroup(ctx, "ready");
           },
           assert: async () => {
-            const proof = await readExtensionsMarketplaceState(ctx, PLUGIN_NAME);
-            ctx.assert(proof.buttonTexts.includes("My Extensions"), `My Extensions toggle missing: ${JSON.stringify(proof.buttonTexts)}`);
-            ctx.assert(proof.buttonTexts.includes("Marketplace"), `Marketplace toggle missing: ${JSON.stringify(proof.buttonTexts)}`);
-            ctx.assert(proof.pageText.includes("Extension Marketplace"), "Marketplace pane did not render.");
-            ctx.assert(proof.pluginCardText.includes(PLUGIN_NAME), `Seed plugin card missing: ${proof.pluginCardText}`);
-            ctx.assert(proof.pluginCardText.includes("Add"), `Seed plugin was not installable: ${proof.pluginCardText}`);
-            ctx.assert(!proof.pluginCardText.includes("Runs in cloud"), `Connect cloud label leaked with flag off: ${proof.pluginCardText}`);
+            const proof = await readConnectPartitionState(ctx);
+            ctx.assert(proof.pageText.includes("From your organization"), "Connect organization section missing.");
+            ctx.assert((proof.groups.ready ?? "").includes(READY_PLUGIN_NAME), `Ready plugin missing from Ready to use: ${proof.groups.ready ?? ""}`);
+            ctx.assert(!proof.pageText.includes(DESKTOP_PLUGIN_NAME), `Desktop-only plugin leaked into Connect: ${proof.pageText}`);
           },
           screenshot: {
-            name: "connect-delivery-flag-off-marketplace-installable",
-            claim: "Flag off keeps the Extensions Marketplace toggle and an installable marketplace plugin.",
-            requireText: ["My Extensions", "Marketplace", PLUGIN_NAME, "Add"],
-            rejectText: ["Cloud-runnable marketplace apps live in Connect.", "Runs in cloud", "Something went wrong"],
+            name: "connect-partition-ready-cloud-only",
+            claim: "Connect shows ready cloud-runnable marketplace content and excludes desktop-only content.",
+            requireText: ["From your organization", "READY TO USE", READY_PLUGIN_NAME],
+            rejectText: [DESKTOP_PLUGIN_NAME, "Something went wrong"],
           },
         });
       },
@@ -71,31 +72,23 @@ export default {
     {
       name: "Frame 2",
       run: async (ctx) => {
-        await ctx.prove("With Connect on, the Extensions Marketplace tab filters to machine-installable items and points cloud content at Connect", {
+        await ctx.prove("Connect separates per-member team connections into Needs your sign-in", {
           voiceover: vo[1],
           action: async () => {
-            await setCapabilityViaAdminApi(ctx, { mcpConnections: true });
-            await remountDesktop(ctx);
-            await navigateToSettingsTab(ctx, "extensions");
-            await ctx.waitForText("Cloud-runnable marketplace apps live in Connect.", { timeoutMs: 60_000 });
-            await openExtensionsMarketplace(ctx);
-            await ctx.waitForText("installs on this machine", { timeoutMs: 30_000 });
+            await scrollConnectGroup(ctx, "needs_signin");
+            await waitForConnectText(ctx, CONNECTION_NAME);
           },
           assert: async () => {
-            const proof = await readExtensionsMarketplaceState(ctx, PLUGIN_NAME);
-            ctx.assert(proof.pageText.includes("Cloud-runnable marketplace apps live in Connect."), "Runtime-split hint missing.");
-            ctx.assert(proof.buttonTexts.includes("Open Connect"), `Open Connect button missing: ${JSON.stringify(proof.buttonTexts)}`);
-            ctx.assert(proof.buttonTexts.includes("My Extensions"), `My Extensions toggle should stay: ${JSON.stringify(proof.buttonTexts)}`);
-            ctx.assert(proof.buttonTexts.includes("Marketplace"), `Marketplace toggle should stay: ${JSON.stringify(proof.buttonTexts)}`);
-            ctx.assert(proof.pageText.includes("installs on this machine"), "Filtered marketplace heading missing.");
-            ctx.assert(!proof.pluginCardText.includes(PLUGIN_NAME), `Cloud-runnable plugin leaked into the machine pane: ${proof.pluginCardText}`);
-            ctx.assert(!proof.pageText.includes(PLUGIN_NAME), "Cloud-runnable plugin name rendered in Extensions marketplace pane.");
+            const proof = await readConnectPartitionState(ctx);
+            const needsSignin = proof.groups.needs_signin ?? "";
+            ctx.assert(needsSignin.includes(CONNECTION_NAME), `Per-member connection missing: ${needsSignin}`);
+            ctx.assert(needsSignin.includes("Connect"), `Connect action missing from sign-in row: ${needsSignin}`);
           },
           screenshot: {
-            name: "connect-delivery-flag-on-extensions-hint",
-            claim: "Flag on keeps the Marketplace tab but filters it to items that install on this machine.",
-            requireText: ["installs on this machine", "Open Connect"],
-            rejectText: [PLUGIN_NAME, "Something went wrong"],
+            name: "connect-partition-needs-signin",
+            claim: "Needs your sign-in contains the per-member connection and its Connect action.",
+            requireText: ["NEEDS YOUR SIGN-IN", CONNECTION_NAME, "Connect"],
+            rejectText: [DESKTOP_PLUGIN_NAME, "Something went wrong"],
           },
         });
       },
@@ -103,29 +96,24 @@ export default {
     {
       name: "Frame 3",
       run: async (ctx) => {
-        await ctx.prove("Connect active state lists the seeded marketplace plugin as cloud-run with no install action", {
+        await ctx.prove("Admins see plugins whose MCP dependency still needs setup", {
           voiceover: vo[2],
           action: async () => {
-            await ctx.clickText("Open Connect", { selector: "button", timeoutMs: 30_000 });
-            await ctx.waitFor("window.location.hash.includes('/settings/connect')", { timeoutMs: 30_000, label: "connect settings route" });
-            await waitForConnectOrganizationRow(ctx, PLUGIN_NAME);
-            await ctx.eval("document.querySelector('[data-testid=\"connect-organization-section\"]')?.scrollIntoView({ block: 'center' })");
+            await scrollConnectGroup(ctx, "needs_admin_setup");
+            await waitForConnectText(ctx, NEEDS_SETUP_PLUGIN_NAME);
           },
           assert: async () => {
-            const proof = await readConnectOrganizationState(ctx, PLUGIN_NAME);
-            ctx.assert(proof.statusText.includes("Connected to"), `Connect status missing: ${JSON.stringify(proof)}`);
-            ctx.assert(proof.sectionText.includes("From your organization"), `Organization section missing: ${proof.sectionText}`);
-            ctx.assert(proof.sectionText.includes("READY TO USE"), `Ready group missing: ${proof.sectionText}`);
-            ctx.assert(proof.rowText.includes(PLUGIN_NAME), `Seed plugin missing from Connect row: ${proof.rowText}`);
-            ctx.assert(proof.rowText.includes("Ready"), `Ready chip missing: ${proof.rowText}`);
-            ctx.assert(proof.rowButtons.length === 0, `Ready row should have no action button: ${JSON.stringify(proof.rowButtons)}`);
-            ctx.assert(!proof.rowText.includes("Add"), `Connect row exposed Add: ${proof.rowText}`);
+            const proof = await readConnectPartitionState(ctx);
+            const adminSetup = proof.groups.needs_admin_setup ?? "";
+            ctx.assert(adminSetup.includes(NEEDS_SETUP_PLUGIN_NAME), `Needs-admin plugin missing: ${adminSetup}`);
+            ctx.assert(adminSetup.includes("Set up connection"), `Setup affordance missing: ${adminSetup}`);
+            ctx.assert(adminSetup.includes("unmatched"), `Unmatched dependency name/url missing: ${adminSetup}`);
           },
           screenshot: {
-            name: "connect-delivery-connect-cloud-rail",
-            claim: "Connect lists the marketplace plugin in the Ready group with no install button.",
-            requireText: ["From your organization", "READY TO USE", PLUGIN_NAME],
-            rejectText: ["Something went wrong"],
+            name: "connect-partition-needs-admin-setup",
+            claim: "Admins see the unmatched MCP plugin with the setup affordance.",
+            requireText: ["NEEDS ADMIN SETUP", NEEDS_SETUP_PLUGIN_NAME, "Set up connection"],
+            rejectText: [DESKTOP_PLUGIN_NAME, "Something went wrong"],
           },
         });
       },
@@ -133,26 +121,24 @@ export default {
     {
       name: "Frame 4",
       run: async (ctx) => {
-        await ctx.prove("Turning Connect back off restores the Extensions Marketplace toggle and install action", {
+        await ctx.prove("Extensions Marketplace in Connect mode shows only desktop-installable marketplace content", {
           voiceover: vo[3],
           action: async () => {
-            await setCapabilityViaAdminApi(ctx, { mcpConnections: false });
-            await remountDesktop(ctx);
             await openExtensionsMarketplace(ctx);
-            await waitForMarketplacePlugin(ctx, PLUGIN_NAME);
+            await waitForMarketplacePlugin(ctx, DESKTOP_PLUGIN_NAME);
           },
           assert: async () => {
-            const proof = await readExtensionsMarketplaceState(ctx, PLUGIN_NAME);
-            ctx.assert(proof.buttonTexts.includes("My Extensions"), `My Extensions toggle did not return: ${JSON.stringify(proof.buttonTexts)}`);
-            ctx.assert(proof.buttonTexts.includes("Marketplace"), `Marketplace toggle did not return: ${JSON.stringify(proof.buttonTexts)}`);
-            ctx.assert(proof.pluginCardText.includes("Add"), `Seed plugin was not installable after restore: ${proof.pluginCardText}`);
-            ctx.assert(!proof.pageText.includes("Cloud-runnable marketplace apps live in Connect."), "Runtime-split hint persisted after capability off.");
+            const proof = await readExtensionsMarketplaceState(ctx, DESKTOP_PLUGIN_NAME);
+            ctx.assert(proof.pageText.includes("installs on this machine"), "Filtered marketplace heading missing.");
+            ctx.assert(proof.pluginCardText.includes(DESKTOP_PLUGIN_NAME), `Desktop-only plugin missing: ${proof.pluginCardText}`);
+            ctx.assert(proof.pluginCardText.includes("Add"), `Install action missing: ${proof.pluginCardText}`);
+            ctx.assert(!proof.pageText.includes(READY_PLUGIN_NAME), `Ready cloud plugin leaked into Extensions marketplace: ${proof.pageText}`);
           },
           screenshot: {
-            name: "connect-delivery-flag-off-restored",
-            claim: "Flag off restores the old Extensions Marketplace pane with the install action.",
-            requireText: ["Extension Marketplace", PLUGIN_NAME, "Add"],
-            rejectText: ["Cloud-runnable marketplace apps live in Connect.", "Runs in cloud", "Something went wrong"],
+            name: "connect-partition-extensions-desktop-filter",
+            claim: "Extensions Marketplace shows only desktop-installable marketplace content in Connect mode.",
+            requireText: ["installs on this machine", DESKTOP_PLUGIN_NAME, "Add"],
+            rejectText: [READY_PLUGIN_NAME, "Something went wrong"],
           },
         });
       },
@@ -161,7 +147,7 @@ export default {
       name: "Cleanup",
       run: async (ctx) => {
         await setCapabilityViaAdminApi(ctx, { mcpConnections: false }).catch(() => undefined);
-        await cleanupSeededMarketplace(ctx).catch((error) => {
+        await cleanupSeededResources(ctx).catch((error) => {
           ctx.log(`Cleanup failed: ${error instanceof Error ? error.message : String(error)}`);
         });
       },
@@ -287,22 +273,23 @@ async function setCapabilityViaAdminApi(ctx, capabilities) {
 function skillSourceText() {
   return [
     "---",
-    `name: ${SKILL_NAME}`,
-    `description: ${SKILL_DESCRIPTION}`,
+    `name: partition-ready-${RUN_TAG}`,
+    "description: Ready cloud skill for the Connect partition proof.",
     "---",
     "",
-    "When invoked, explain that this marketplace skill is active through OpenWork Connect.",
+    "When invoked, explain that this skill is ready through OpenWork Connect.",
   ].join("\n");
 }
 
-async function seedMarketplacePlugin(ctx) {
-  await cleanupSeededMarketplace(ctx);
+async function seedMarketplacePlugins(ctx) {
+  await cleanupSeededResources(ctx);
   const token = requireStateValue(state.orgAdminToken, "org admin token");
+  const headers = { authorization: `Bearer ${token}` };
 
   const marketplace = await denApiFetch("/v1/marketplaces", {
     method: "POST",
-    headers: { authorization: `Bearer ${token}` },
-    body: JSON.stringify({ name: MARKETPLACE_NAME, description: "Connect delivery switch seeded marketplace" }),
+    headers,
+    body: JSON.stringify({ name: MARKETPLACE_NAME, description: "Connect cloud partition seeded marketplace" }),
   });
   ctx.assert(marketplace.response.ok, `Marketplace create failed: ${marketplace.response.status} ${marketplace.text.slice(0, 300)}`);
   state.marketplaceId = marketplace.body?.item?.id ?? null;
@@ -310,31 +297,100 @@ async function seedMarketplacePlugin(ctx) {
 
   const grant = await denApiFetch(`/v1/marketplaces/${state.marketplaceId}/access`, {
     method: "POST",
-    headers: { authorization: `Bearer ${token}` },
+    headers,
     body: JSON.stringify({ orgWide: true, role: "viewer" }),
   });
   ctx.assert(grant.response.ok, `Marketplace access grant failed: ${grant.response.status} ${grant.text.slice(0, 300)}`);
 
+  await createSeedPlugin(ctx, {
+    name: READY_PLUGIN_NAME,
+    description: "A cloud-ready skill-only plugin.",
+    components: [{
+      type: "skill",
+      input: {
+        rawSourceText: skillSourceText(),
+        metadata: { name: `partition-ready-${RUN_TAG}`, description: "Ready cloud skill" },
+      },
+    }],
+  });
+
+  await createSeedPlugin(ctx, {
+    name: NEEDS_SETUP_PLUGIN_NAME,
+    description: "A plugin whose MCP dependency has no matching org connection.",
+    components: [{
+      type: "mcp",
+      input: {
+        rawSourceText: JSON.stringify({ mcpServers: { unmatched: { url: UNMATCHED_MCP_URL } } }),
+        normalizedPayloadJson: { mcpServers: { unmatched: { url: UNMATCHED_MCP_URL } } },
+        metadata: { name: "unmatched" },
+      },
+    }],
+  });
+
+  await createSeedPlugin(ctx, {
+    name: DESKTOP_PLUGIN_NAME,
+    description: "A desktop-only local tool plugin.",
+    components: [{
+      type: "tool",
+      input: {
+        rawSourceText: "export function run() { return 'desktop-only'; }",
+        metadata: { name: "desktop-only-tool", description: "Installs on this machine" },
+      },
+    }],
+  });
+
+  const connection = await denApiFetch("/v1/mcp-connections", {
+    method: "POST",
+    headers,
+    body: JSON.stringify({
+      name: CONNECTION_NAME,
+      url: CONNECTION_URL,
+      authType: "oauth",
+      credentialMode: "per_member",
+      access: { orgWide: true, memberIds: [], teamIds: [] },
+    }),
+  });
+  ctx.assert(connection.response.ok, `MCP connection create failed: ${connection.response.status} ${connection.text.slice(0, 300)}`);
+  state.connectionId = connection.body?.id ?? null;
+  ctx.assert(typeof state.connectionId === "string", `MCP connection response missing id: ${connection.text.slice(0, 300)}`);
+}
+
+async function createSeedPlugin(ctx, input) {
+  const token = requireStateValue(state.orgAdminToken, "org admin token");
   const plugin = await denApiFetch("/v1/plugins", {
     method: "POST",
     headers: { authorization: `Bearer ${token}` },
     body: JSON.stringify({
-      name: PLUGIN_NAME,
-      description: PLUGIN_DESCRIPTION,
+      name: input.name,
+      description: input.description,
       orgWide: true,
-      marketplaceId: state.marketplaceId,
-      components: [{
-        type: "skill",
-        input: {
-          rawSourceText: skillSourceText(),
-          metadata: { name: SKILL_NAME, description: SKILL_DESCRIPTION },
-        },
-      }],
+      marketplaceId: requireStateValue(state.marketplaceId, "marketplace id"),
+      components: input.components,
     }),
   });
-  ctx.assert(plugin.response.ok, `Plugin create failed: ${plugin.response.status} ${plugin.text.slice(0, 300)}`);
-  state.pluginId = plugin.body?.item?.id ?? null;
-  ctx.assert(typeof state.pluginId === "string", `Plugin create response missing id: ${plugin.text.slice(0, 300)}`);
+  ctx.assert(plugin.response.ok, `Plugin create failed for ${input.name}: ${plugin.response.status} ${plugin.text.slice(0, 300)}`);
+  const pluginId = plugin.body?.item?.id ?? null;
+  ctx.assert(typeof pluginId === "string", `Plugin create response missing id for ${input.name}: ${plugin.text.slice(0, 300)}`);
+  state.pluginIds.push(pluginId);
+}
+
+async function cleanupSeededResources(ctx) {
+  await cleanupSeededConnections(ctx);
+  await cleanupSeededMarketplace(ctx);
+}
+
+async function cleanupSeededConnections(ctx) {
+  if (!state.orgAdminToken) return;
+  const token = state.orgAdminToken;
+  const headers = { authorization: `Bearer ${token}` };
+  const listed = await denApiFetch("/v1/mcp-connections?scope=manageable", { headers });
+  if (listed.response.ok && Array.isArray(listed.body?.connections)) {
+    for (const connection of listed.body.connections) {
+      if (typeof connection.name !== "string" || !connection.name.startsWith("Partition Personal MCP")) continue;
+      await denApiFetch(`/v1/mcp-connections/${connection.id}`, { method: "DELETE", headers });
+    }
+  }
+  state.connectionId = null;
 }
 
 async function cleanupSeededMarketplace(ctx) {
@@ -351,16 +407,16 @@ async function cleanupSeededMarketplace(ctx) {
     }
   }
 
-  const plugins = await denApiFetch(`/v1/plugins?limit=100&q=${encodeURIComponent("Connect Delivery Probe")}`, { headers });
+  const plugins = await denApiFetch(`/v1/plugins?limit=100&q=${encodeURIComponent("Partition")}`, { headers });
   if (plugins.response.ok && Array.isArray(plugins.body?.items)) {
     for (const plugin of plugins.body.items) {
-      if (typeof plugin.name !== "string" || !plugin.name.startsWith("Connect Delivery Probe")) continue;
+      if (typeof plugin.name !== "string" || !plugin.name.startsWith("Partition")) continue;
       await cleanupPlugin(ctx, plugin.id, token);
     }
   }
 
   state.marketplaceId = null;
-  state.pluginId = null;
+  state.pluginIds = [];
 }
 
 async function cleanupMarketplacePlugins(ctx, marketplaceId, token) {
@@ -392,15 +448,15 @@ async function cleanupPlugin(ctx, pluginId, token) {
   }
 }
 
-async function prepareSignedInDesktopWithConnectOff(ctx) {
+async function prepareSignedInDesktopWithConnectOn(ctx) {
   await ensurePlatformAdmin(ctx);
   await ensureOrgAdminContext(ctx);
   await setCapabilityViaAdminApi(ctx, { mcpConnections: true });
-  await seedMarketplacePlugin(ctx);
-  await setCapabilityViaAdminApi(ctx, { mcpConnections: false });
+  await seedMarketplacePlugins(ctx);
   await signDesktopIntoCloud(ctx);
   await clearDesktopConfigCache(ctx);
   await completeDesktopCloudOnboardingIfNeeded(ctx);
+  await remountDesktop(ctx);
 }
 
 async function signDesktopIntoCloud(ctx) {
@@ -490,9 +546,6 @@ async function navigateToSettingsTab(ctx, tab) {
   const workspaceId = await ctx.eval("(window.location.hash.match(/\\/workspace\\/([^/]+)/) ?? [])[1] ?? ''");
   await ctx.navigateHash(workspaceId ? `/workspace/${workspaceId}/settings/${tab}` : `/settings/${tab}`);
   await ctx.waitFor(`window.location.hash.includes('/settings/${tab}')`, { timeoutMs: 30_000, label: `${tab} settings route` });
-  // Hash changes during early boot can leave the React root empty (observed
-  // deterministically after remounts). Recover once with a reload — the hash
-  // is already at the target, so a fresh boot lands on the right tab.
   try {
     await ctx.waitFor("(document.body?.innerText ?? '').includes('Back to app')", { timeoutMs: 10_000, label: "settings surface mounted" });
   } catch {
@@ -506,13 +559,21 @@ async function openExtensionsMarketplace(ctx) {
   await navigateToSettingsTab(ctx, "extensions");
   await ctx.waitForText("My Extensions", { timeoutMs: 30_000 });
   await ctx.clickText("Marketplace", { selector: "button", timeoutMs: 30_000 });
-  // Heading differs by mode: flag off = "Extension Marketplace", flag on =
-  // "From your marketplace — installs on this machine".
-  await ctx.waitFor(
-    "(document.body?.innerText ?? '').includes('Extension Marketplace') || (document.body?.innerText ?? '').includes('installs on this machine')",
-    { timeoutMs: 30_000, label: "marketplace pane heading" },
-  );
+  await ctx.waitForText("installs on this machine", { timeoutMs: 30_000 });
   await ctx.control("extensions.refresh-marketplace").catch(() => {});
+}
+
+async function waitForConnectText(ctx, text) {
+  const deadline = Date.now() + 90_000;
+  while (Date.now() < deadline) {
+    const found = await ctx.eval(`document.body.innerText.includes(${JSON.stringify(text)})`);
+    if (found) return;
+    // The marketplace store serves a cached snapshot after remounts — force a
+    // refetch while polling, mirroring waitForMarketplacePlugin.
+    await ctx.control("extensions.refresh-marketplace").catch(() => {});
+    await sleep(2_000);
+  }
+  ctx.assert(false, `Connect text did not render: ${text}`);
 }
 
 async function waitForMarketplacePlugin(ctx, name) {
@@ -526,31 +587,25 @@ async function waitForMarketplacePlugin(ctx, name) {
   ctx.assert(false, `Marketplace plugin did not render: ${name}`);
 }
 
-async function waitForConnectOrganizationRow(ctx, name) {
-  const deadline = Date.now() + 90_000;
-  while (Date.now() < deadline) {
-    const found = await ctx.eval(`(() => {
-      const rows = [...document.querySelectorAll('[data-testid="connect-organization-row"]')];
-      return rows.some((row) => (row.innerText ?? '').includes(${JSON.stringify(name)}));
-    })()`);
-    if (found) return;
-    await sleep(1_000);
-  }
-  ctx.assert(false, `Connect organization row did not render: ${name}`);
+async function scrollConnectGroup(ctx, group) {
+  await ctx.eval(`(() => {
+    const group = document.querySelector('[data-connect-group=${JSON.stringify(group)}]');
+    group?.scrollIntoView({ block: 'center' });
+    return Boolean(group);
+  })()`);
+  await sleep(300);
 }
 
-async function readConnectOrganizationState(ctx, name) {
+async function readConnectPartitionState(ctx) {
   return ctx.eval(`(() => {
     const compact = (entry) => (entry?.innerText ?? entry?.textContent ?? '').replace(/\\s+/g, ' ').trim();
-    const section = document.querySelector('[data-testid="connect-organization-section"]');
-    const row = [...document.querySelectorAll('[data-testid="connect-organization-row"]')]
-      .find((entry) => compact(entry).includes(${JSON.stringify(name)}));
+    const groups = {};
+    for (const group of document.querySelectorAll('[data-connect-group]')) {
+      groups[group.getAttribute('data-connect-group')] = compact(group);
+    }
     return {
       pageText: document.body.innerText,
-      statusText: compact(document.querySelector('[data-testid="connect-org-status-row"]')),
-      sectionText: section ? section.innerText : '',
-      rowText: compact(row),
-      rowButtons: [...(row?.querySelectorAll('button') ?? [])].map(compact),
+      groups,
     };
   })()`);
 }
@@ -564,33 +619,6 @@ async function readExtensionsMarketplaceState(ctx, name) {
       pageText: document.body.innerText,
       buttonTexts: buttons.map(compact),
       pluginCardText: compact(pluginCard),
-    };
-  })()`);
-}
-
-async function readExtensionsHintState(ctx) {
-  return ctx.eval(`(() => {
-    const compact = (entry) => (entry?.innerText ?? entry?.textContent ?? '').replace(/\\s+/g, ' ').trim();
-    const buttons = [...document.querySelectorAll('button')];
-    return {
-      text: document.body.innerText,
-      buttonTexts: buttons.map(compact),
-    };
-  })()`);
-}
-
-async function readConnectMarketplaceState(ctx, name) {
-  return ctx.eval(`(() => {
-    const compact = (entry) => (entry?.innerText ?? entry?.textContent ?? '').replace(/\\s+/g, ' ').trim();
-    const section = document.querySelector('[data-testid="connect-marketplace-section"]');
-    const card = [...document.querySelectorAll('[data-testid="connect-marketplace-plugin-card"]')]
-      .find((entry) => compact(entry).includes(${JSON.stringify(name)}));
-    return {
-      pageText: document.body.innerText,
-      statusText: compact(document.querySelector('[data-testid="connect-org-status-row"]')),
-      sectionText: compact(section),
-      cardText: compact(card),
-      cardButtons: [...(card?.querySelectorAll('button') ?? [])].map(compact),
     };
   })()`);
 }
