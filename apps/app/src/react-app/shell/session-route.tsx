@@ -109,6 +109,7 @@ import { useModelPicker } from "@/react-app/domains/session/modals/use-model-pic
 import { appMentionInstruction } from "@/react-app/domains/session/surface/composer/app-mentions";
 import { CreateRemoteWorkspaceModal } from "@/react-app/domains/workspace/create-remote-workspace-modal";
 import { CreateWorkspaceModal } from "@/react-app/domains/workspace/create-workspace-modal";
+import type { CreateWorkspaceOptions } from "@/react-app/domains/workspace/types";
 import { useSessionProviderAuth } from "@/react-app/domains/connections/provider-auth/use-session-provider-auth";
 import { useMcpConnectedCount } from "@/react-app/domains/connections/use-mcp-connected-count";
 import { useRemoteAccessRestart } from "@/react-app/domains/workspace/remote-access-restart";
@@ -134,9 +135,11 @@ import {
   forgetWorkspaceMemory,
   readActiveWorkspaceId,
   readLastSessionFor,
+  readWorkspaceProjectDimension,
   readWorkspaceOrderIds,
   writeActiveWorkspaceId,
   writeLastSessionFor,
+  writeWorkspaceProjectDimension,
   writeWorkspaceOrderIds,
 } from "./session-memory";
 import {
@@ -838,8 +841,15 @@ export function SessionRoute() {
         // Den org adoption signals (auth-gated inside; no-op when signed out).
         // Lives here — the live send choke point — because its previous call
         // site was in the orphaned actions-store and never fired.
-        trackSessionActive(targetSessionId);
-        trackTaskStarted(targetSessionId);
+        const projectDimension = readWorkspaceProjectDimension(selectedWorkspaceId);
+        const telemetryDimensions = projectDimension
+          ? [{
+              type: "project",
+              label: projectDimension.label,
+            }]
+          : undefined;
+        trackSessionActive(targetSessionId, telemetryDimensions);
+        trackTaskStarted(targetSessionId, telemetryDimensions);
 
         if (draft.mode === "shell") {
           await shellInSession(opencodeClient, targetSessionId, text);
@@ -1573,8 +1583,13 @@ export function SessionRoute() {
     [opencodeClient, refreshRouteState, selectedWorkspaceRoot],
   );
 
-  const handleCreateWorkspace = useCallback(async (preset: WorkspacePreset, folder: string | null) => {
+  const handleCreateWorkspace = useCallback(async (
+    preset: WorkspacePreset,
+    folder: string | null,
+    options?: CreateWorkspaceOptions,
+  ) => {
     if (!folder) return;
+    const projectLabel = options?.projectLabel?.trim() ?? "";
     setCreateWorkspaceBusy(true);
     setCreateWorkspaceError(null);
     try {
@@ -1615,6 +1630,11 @@ export function SessionRoute() {
           : null;
         setLegacySelectedWorkspaceId(targetWorkspaceId);
         writeActiveWorkspaceId(targetWorkspaceId);
+        if (projectLabel) {
+          writeWorkspaceProjectDimension(targetWorkspaceId, {
+            label: projectLabel,
+          });
+        }
         captureAnalyticsEvent("workspace_created", { workspace_type: "local" });
         if (session?.id) {
           captureAnalyticsEvent("task_created", { source: "workspace_created", workspace_type: "local" });
@@ -1642,14 +1662,19 @@ export function SessionRoute() {
   const createWorkspaceControlAction = useMemo<OpenworkControlAction>(() => ({
     id: "workspace.create",
     label: "Create a local workspace",
-    description: "Create a workspace at the given folder path without showing the file picker dialog.",
+    description: "Create a workspace at the given folder path without showing the file picker dialog, optionally labeling its project for analytics.",
     sideEffect: "mutation",
     requiresArgs: true,
-    args: [{ name: "path", type: "string", required: true, description: "Absolute folder path for the new workspace." }],
+    args: [
+      { name: "path", type: "string", required: true, description: "Absolute folder path for the new workspace." },
+      { name: "projectLabel", type: "string", required: false, description: "Optional project name used to group the workspace's sessions in analytics." },
+    ],
     execute: async (args) => {
-      const folder = (args as { path?: string } | undefined)?.path?.trim();
+      const parsed = args as { path?: string; projectLabel?: string } | undefined;
+      const folder = parsed?.path?.trim();
       if (!folder) return { ok: false, error: "path is required" };
-      await handleCreateWorkspace("starter", folder);
+      const trimmedLabel = parsed?.projectLabel?.trim() ?? "";
+      await handleCreateWorkspace("starter", folder, trimmedLabel ? { projectLabel: trimmedLabel } : undefined);
       return { path: folder };
     },
   }), [handleCreateWorkspace]);

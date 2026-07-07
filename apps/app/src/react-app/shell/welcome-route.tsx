@@ -19,6 +19,7 @@ import { WelcomePage } from "../domains/onboarding/welcome-page";
 import { ProviderSelectionStep } from "../domains/onboarding/provider-selection-step";
 import { AttributionStep, type AttributionSource } from "../domains/onboarding/attribution-step";
 import { CreateWorkspaceModal } from "../domains/workspace/create-workspace-modal";
+import type { CreateWorkspaceOptions } from "../domains/workspace/types";
 import {
   getOpenWorkModelsActionUrl,
   hideOpenWorkModelsPromo,
@@ -29,7 +30,7 @@ import { resolveOpenworkConnection } from "./openwork-connection";
 import { captureAnalyticsEvent } from "../../app/lib/analytics";
 import { buildOpenworkWorkspaceBaseUrl, createOpenworkServerClient } from "../../app/lib/openwork-server";
 import { buildDenAuthUrl, DEFAULT_DEN_BASE_URL, readDenSettings } from "../../app/lib/den";
-import { writeActiveWorkspaceId, writeLastSessionFor } from "./session-memory";
+import { writeActiveWorkspaceId, writeLastSessionFor, writeWorkspaceProjectDimension } from "./session-memory";
 import { workspaceSessionRoute } from "./workspace-routes";
 import { ensureDesktopLocalOpenworkConnection } from "./desktop-local-openwork";
 
@@ -136,8 +137,9 @@ export function WelcomeRoute() {
   }, [local]);
 
   const handleCreateWorkspace = useCallback(
-    async (_preset: string, folder: string | null) => {
+    async (_preset: string, folder: string | null, options?: CreateWorkspaceOptions) => {
       if (!folder) return;
+      const projectLabel = options?.projectLabel?.trim() ?? "";
       dispatch({ type: "create:start" });
       try {
         const workspaceName = folderNameFromPath(folder);
@@ -202,6 +204,11 @@ export function WelcomeRoute() {
         }
         if (targetWorkspaceId) {
           writeActiveWorkspaceId(targetWorkspaceId);
+          if (projectLabel) {
+            writeWorkspaceProjectDimension(targetWorkspaceId, {
+              label: projectLabel,
+            });
+          }
           if (targetSessionId) writeLastSessionFor(targetWorkspaceId, targetSessionId);
         }
         markOnboardingComplete();
