@@ -60,7 +60,7 @@ export function SsoScreen() {
     setBusy(true);
     setError(null);
     try {
-      const { response, payload } = await requestJson("/v1/sso", { method: "GET" }, 12000);
+      const { response, payload } = await requestJson("/v1/sso", { method: "GET", headers: getOrgScopedHeaders() }, 12000);
       if (!response.ok) {
         throw new Error(getErrorMessage(payload, `Failed to load SSO settings (${response.status}).`));
       }
@@ -74,6 +74,14 @@ export function SsoScreen() {
     } finally {
       setBusy(false);
     }
+  }
+
+  function getOrgScopedHeaders() {
+    const headers = new Headers();
+    if (orgId) {
+      headers.set("x-openwork-legacy-org-id", orgId);
+    }
+    return headers;
   }
 
   function syncFormFromConnection(nextConnection: DenOrgSsoConnection | null) {
@@ -154,7 +162,7 @@ export function SsoScreen() {
                 tokenEndpointAuthentication: tokenEndpointAuthentication || undefined,
               };
 
-          const { response, payload } = await requestJson(path, { method: "POST", body: JSON.stringify(body) }, 20000);
+          const { response, payload } = await requestJson(path, { method: "POST", headers: getOrgScopedHeaders(), body: JSON.stringify(body) }, 20000);
           if (!response.ok) {
             throw getRequestError(payload, response, `Failed to save SSO settings (${response.status}).`);
           }
@@ -183,7 +191,7 @@ export function SsoScreen() {
       await runReauthableAction("delete-sso-settings", async () => {
         setDeleting(true);
         try {
-          const { response, payload } = await requestJson("/v1/sso", { method: "DELETE" }, 12000);
+          const { response, payload } = await requestJson("/v1/sso", { method: "DELETE", headers: getOrgScopedHeaders() }, 12000);
           if (response.status !== 204 && !response.ok) {
             throw getRequestError(payload, response, `Failed to delete SSO settings (${response.status}).`);
           }
@@ -206,7 +214,7 @@ export function SsoScreen() {
       await runReauthableAction("request-sso-domain-token", async () => {
         setRequestingDomainToken(true);
         try {
-          const { response, payload } = await requestJson("/v1/sso/request-domain-verification", { method: "POST", body: JSON.stringify({}) }, 12000);
+          const { response, payload } = await requestJson("/v1/sso/request-domain-verification", { method: "POST", headers: getOrgScopedHeaders(), body: JSON.stringify({}) }, 12000);
           if (!response.ok) {
             throw getRequestError(payload, response, `Failed to request domain verification (${response.status}).`);
           }
@@ -234,7 +242,7 @@ export function SsoScreen() {
       await runReauthableAction("verify-sso-domain", async () => {
         setVerifyingDomain(true);
         try {
-          const { response, payload } = await requestJson("/v1/sso/verify-domain", { method: "POST", body: JSON.stringify({}) }, 12000);
+          const { response, payload } = await requestJson("/v1/sso/verify-domain", { method: "POST", headers: getOrgScopedHeaders(), body: JSON.stringify({}) }, 12000);
           if (response.status !== 204 && !response.ok) {
             throw getRequestError(payload, response, `Failed to verify domain (${response.status}).`);
           }
