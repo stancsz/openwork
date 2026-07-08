@@ -1,5 +1,5 @@
 /** @jsxImportSource react */
-import type { ComponentProps, ReactNode } from "react";
+import { useState, type ComponentProps, type ReactNode } from "react";
 import { CircleAlert, Cpu, Database, Info, RefreshCcw, Server } from "lucide-react";
 
 import { Alert, AlertDescription } from "@/components/ui/alert";
@@ -44,14 +44,24 @@ interface AdvancedOrganizationServerSectionProps {
   baseUrlError: string | null;
   onApplyBaseUrl: () => void | Promise<void>;
   onBaseUrlDraftChange: (value: string) => void;
+  onClearServerConfiguration: () => void | Promise<void>;
   onResetBaseUrlToDefault: () => void | Promise<void>;
   sessionBusy: boolean;
 }
 
 export function AdvancedOrganizationServerSection(props: AdvancedOrganizationServerSectionProps) {
+  const [clearConfirming, setClearConfirming] = useState(false);
   const controlsDisabled = [props.authBusy, props.baseUrlBusy, props.sessionBusy].some(Boolean);
   const customUrl = displayCustomControlPlaneUrl(props.baseUrlDraft);
   const currentUrl = displayCustomControlPlaneUrl(props.baseUrl);
+  const clearServerConfiguration = () => {
+    if (!clearConfirming) {
+      setClearConfirming(true);
+      return;
+    }
+    setClearConfirming(false);
+    void props.onClearServerConfiguration();
+  };
 
   return (
     <LayoutSection>
@@ -79,6 +89,23 @@ export function AdvancedOrganizationServerSection(props: AdvancedOrganizationSer
             ? t("settings.organization_server_current", { url: currentUrl })
             : t("settings.organization_server_default")}
         </LayoutSectionItemFootnote>
+        <div className="flex flex-wrap items-center gap-2 text-[11px] text-gray-9">
+          <Button
+            variant={clearConfirming ? "destructive" : "outline"}
+            size="sm"
+            onClick={clearServerConfiguration}
+            disabled={controlsDisabled}
+          >
+            {clearConfirming
+              ? t("den.cloud_control_plane_clear_confirm")
+              : t("den.cloud_control_plane_clear")}
+          </Button>
+          <span>
+            {clearConfirming
+              ? t("den.cloud_control_plane_clear_confirm_hint")
+              : t("den.cloud_control_plane_clear_hint")}
+          </span>
+        </div>
         {props.baseUrlError ? <SettingsNotice tone="error">{props.baseUrlError}</SettingsNotice> : null}
       </LayoutSectionItem>
     </LayoutSection>

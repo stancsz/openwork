@@ -26,6 +26,7 @@ type AdvancedOrganizationServerSession = Pick<
   | "baseUrlError"
   | "onApplyBaseUrl"
   | "onBaseUrlDraftChange"
+  | "onClearServerConfiguration"
   | "onResetBaseUrlToDefault"
   | "sessionBusy"
 >;
@@ -184,6 +185,7 @@ export function AdvancedView(props: AdvancedViewProps) {
         baseUrlError={props.organizationServer.baseUrlError}
         onApplyBaseUrl={props.organizationServer.onApplyBaseUrl}
         onBaseUrlDraftChange={props.organizationServer.onBaseUrlDraftChange}
+        onClearServerConfiguration={props.organizationServer.onClearServerConfiguration}
         onResetBaseUrlToDefault={props.organizationServer.onResetBaseUrlToDefault}
         sessionBusy={props.organizationServer.sessionBusy}
       />

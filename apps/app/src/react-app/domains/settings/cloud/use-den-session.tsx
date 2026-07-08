@@ -9,6 +9,7 @@ import {
   DEFAULT_DEN_BASE_URL,
   DenApiError,
   ensureDenActiveOrganization,
+  initializeDenBootstrapConfig,
   denOriginComparisonKey,
   normalizeDenBaseUrl,
   readDenSettings,
@@ -16,6 +17,7 @@ import {
   writeDenSettings,
   type DenOrgSummary,
 } from "@/app/lib/den";
+import { clearDesktopBootstrapConfig } from "@/app/lib/desktop";
 import { exchangeHandoffAndSignIn } from "@/app/lib/den-handoff";
 import {
   denSessionUpdatedEvent,
@@ -271,6 +273,41 @@ export function useDenSession({
       setBaseUrlBusy(false);
     }
   }, [clearSignedInState, setBaseUrl]);
+
+  const clearServerConfiguration = React.useCallback(async () => {
+    if (baseUrlBusy) return;
+
+    setBaseUrlBusy(true);
+    setBaseUrlError(null);
+    setAuthError(null);
+    try {
+      // Reset-to-default writes a default-pointing bootstrap file; clear removes
+      // bootstrap files entirely so an MDM-dropped config can win on next launch.
+      await clearDesktopBootstrapConfig();
+      const bootstrap = await initializeDenBootstrapConfig();
+      const resolved = resolveDenBaseUrls(bootstrap);
+      writeDenSettings(
+        {
+          baseUrl: resolved.baseUrl,
+          apiBaseUrl: resolved.apiBaseUrl,
+          authToken: null,
+          activeOrgId: null,
+          activeOrgSlug: null,
+          activeOrgName: null,
+        },
+        { persistBootstrap: false },
+      );
+      setBaseUrl(resolved.baseUrl);
+      setBaseUrlDraft(resolved.baseUrl);
+      clearSignedInState(t("den.status_server_config_cleared"), {
+        baseUrl: resolved.baseUrl,
+      }, { includeBaseUrls: false });
+    } catch (error) {
+      setBaseUrlError(error instanceof Error ? error.message : t("den.error_base_url"));
+    } finally {
+      setBaseUrlBusy(false);
+    }
+  }, [baseUrlBusy, clearSignedInState, setBaseUrl]);
 
   React.useEffect(() => {
     const token = authToken.trim();
@@ -548,6 +585,7 @@ export function useDenSession({
     onActiveOrgChange: handleActiveOrgChange,
     onApplyBaseUrl: applyBaseUrl,
     onBaseUrlDraftChange: setBaseUrlDraft,
+    onClearServerConfiguration: clearServerConfiguration,
     onClearAuthError: () => setAuthError(null),
     onOpenBrowserAuth: openBrowserAuth,
     onOpenControlPlane: openControlPlane,
