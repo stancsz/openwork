@@ -10,8 +10,18 @@ imagePullSecrets: []
 config:
   databaseMode: mysql
   openworkDevMode: "0"
+  tenancy:
+    mode: single_org
+    singleOrgName: OpenWork
+    singleOrgSlug: default
+    ownerEmails: ""
+    allowPublicSignup: "false"
+    requireEmailVerification: "false"
   auth:
     passwordBreachScreeningEnabled: "false"
+  githubConnector:
+    appId: ""
+    clientId: ""
   public:
     webOrigin: https://openwork.example.com
     apiOrigin: https://api.openwork.example.com
@@ -23,6 +33,8 @@ config:
     webAppHosts: openwork.example.com
     bootstrapAdminEmails: ""
     openworkAppConnectUrl: ""
+    installerReleaseTag: ""
+    installerReleaseRepo: ""
     authCallbackUrl: https://openwork.example.com
   internal:
     apiBaseUrl: ""
@@ -88,6 +100,15 @@ secret:
     openRouterManagementApiKey: OPENROUTER_MANAGEMENT_API_KEY
     inferenceAdminToken: INFERENCE_ADMIN_TOKEN
     inferenceWebhookSecret: INFERENCE_WEBHOOK_SECRET
+    emailFrom: EMAIL_FROM
+    smtpHost: SMTP_HOST
+    smtpPort: SMTP_PORT
+    smtpUser: SMTP_USER
+    smtpPass: SMTP_PASS
+    smtpSecure: SMTP_SECURE
+    githubConnectorAppClientSecret: GITHUB_CONNECTOR_APP_CLIENT_SECRET
+    githubConnectorAppPrivateKey: GITHUB_CONNECTOR_APP_PRIVATE_KEY
+    githubConnectorAppWebhookSecret: GITHUB_CONNECTOR_APP_WEBHOOK_SECRET
   values:
     databaseUrl: mysql://openwork:change-me@mysql:3306/openwork_den
     betterAuthSecret: CHANGE_ME_32_CHARS_MINIMUM_BETTER_AUTH
@@ -97,6 +118,21 @@ secret:
     openRouterManagementApiKey: ""
     inferenceAdminToken: ""
     inferenceWebhookSecret: ""
+    emailFrom: ""
+    smtpHost: ""
+    smtpPort: "587"
+    smtpUser: ""
+    smtpPass: ""
+    smtpSecure: "false"
+    githubConnectorAppClientSecret: ""
+    githubConnectorAppPrivateKey: ""
+    githubConnectorAppWebhookSecret: ""
+
+installerArtifacts:
+  enabled: false
+  existingClaim: ""
+  hostPath: ""
+  mountPath: /var/lib/openwork/installer-artifacts
 
 denApi:
   replicaCount: 1
@@ -106,6 +142,9 @@ denApi:
   service:
     type: ClusterIP
     port: 8788
+    annotations: {}
+    loadBalancerClass: ""
+    loadBalancerSourceRanges: []
   containerPort: 8788
   env: {}
   podAnnotations: {}
@@ -131,6 +170,9 @@ denWeb:
   service:
     type: ClusterIP
     port: 3005
+    annotations: {}
+    loadBalancerClass: ""
+    loadBalancerSourceRanges: []
   containerPort: 3005
   env: {}
   podAnnotations: {}
@@ -157,6 +199,9 @@ inference:
   service:
     type: ClusterIP
     port: 8791
+    annotations: {}
+    loadBalancerClass: ""
+    loadBalancerSourceRanges: []
   containerPort: 8791
   env: {}
   podAnnotations: {}
@@ -177,6 +222,7 @@ inference:
 migrations:
   enabled: true
   hook: true
+  hookDeletePolicy: before-hook-creation,hook-succeeded
   backoffLimit: 2
   activeDeadlineSeconds: 600
   podAnnotations: {}

@@ -4,8 +4,19 @@ metadata:
   name: {{ include "openwork-ee.denWebServiceName" . }}
   labels:
     {{- include "openwork-ee.componentLabels" (dict "root" . "component" "den-web") | nindent 4 }}
+  {{- with .Values.denWeb.service.annotations }}
+  annotations:
+    {{- toYaml . | nindent 4 }}
+  {{- end }}
 spec:
   type: {{ .Values.denWeb.service.type }}
+  {{- with .Values.denWeb.service.loadBalancerClass }}
+  loadBalancerClass: {{ . | quote }}
+  {{- end }}
+  {{- with .Values.denWeb.service.loadBalancerSourceRanges }}
+  loadBalancerSourceRanges:
+    {{- toYaml . | nindent 4 }}
+  {{- end }}
   ports:
     - name: http
       port: {{ .Values.denWeb.service.port }}
@@ -31,10 +42,12 @@ spec:
         {{- with .Values.denWeb.podLabels }}
         {{- toYaml . | nindent 8 }}
         {{- end }}
-      {{- with .Values.denWeb.podAnnotations }}
       annotations:
+        checksum/config: {{ include (print $.Template.BasePath "/configmap.yaml") . | sha256sum }}
+        checksum/secret: {{ include (print $.Template.BasePath "/secret.yaml") . | sha256sum }}
+        {{- with .Values.denWeb.podAnnotations }}
         {{- toYaml . | nindent 8 }}
-      {{- end }}
+        {{- end }}
     spec:
       {{- with .Values.imagePullSecrets }}
       imagePullSecrets:

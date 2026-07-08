@@ -49,6 +49,7 @@ import {
 import { Accordion, AccordionContent, AccordionItem, AccordionTrigger } from "@/components/ui/accordion";
 import { Alert, AlertDescription } from "@/components/ui/alert";
 import { Button } from "@/components/ui/button";
+import { Input } from "@/components/ui/input";
 import {
   Empty,
   EmptyContent,
@@ -63,6 +64,7 @@ import {
   RadioGroup,
   RadioGroupItem,
 } from "@/components/ui/radio-group"
+import { useOrgListWindow } from "./use-org-list-window";
 
 const RELOAD_AFTER_ONBOARDING_KEY = "openwork.reloadAfterOrgOnboarding";
 
@@ -73,10 +75,9 @@ function useDenClient() {
     () =>
       createDenClient({
         baseUrl: settings.baseUrl,
-        apiBaseUrl: settings.apiBaseUrl,
         token: settings.authToken,
       }),
-    [authToken, settings.apiBaseUrl, settings.baseUrl],
+    [authToken, settings.baseUrl],
   );
 
   return {
@@ -257,7 +258,7 @@ export function OrgOnboardingPage() {
   }, [authToken, navigate, prepared]);
 
   const { data, error, isPending } = useQuery({
-    queryKey: ["den-org-onboarding", settings.baseUrl, settings.apiBaseUrl, "orgs"],
+    queryKey: ["den-org-onboarding", settings.baseUrl, "orgs"],
     enabled: Boolean(authToken),
     queryFn: () => denClient.listOrgs(),
   });
@@ -356,12 +357,12 @@ export function ResourceSelectionPage() {
   const { providers, marketplaces, loading, error } = useQueries({
     queries: [
       {
-        queryKey: ["den-org-onboarding", settings.baseUrl, settings.apiBaseUrl, orgId, "providers"],
+        queryKey: ["den-org-onboarding", settings.baseUrl, orgId, "providers"],
         enabled: Boolean(authToken && orgId),
         queryFn: () => denClient.listOrgLlmProviders(orgId),
       },
       {
-        queryKey: ["den-org-onboarding", settings.baseUrl, settings.apiBaseUrl, orgId, "marketplaces"],
+        queryKey: ["den-org-onboarding", settings.baseUrl, orgId, "marketplaces"],
         enabled: Boolean(authToken && orgId),
         queryFn: () => denClient.listOrgMarketplaces(orgId),
       },
@@ -786,45 +787,76 @@ interface OrganizationListProps {
 }
 
 export function OrganizationList({ orgs, value, onValueChange }: OrganizationListProps) {
-  return (
-    <RadioGroup
-      value={value.id}
-      onValueChange={(nextOrgId) => {
-        const nextOrg = orgs.find((org) => org.id === nextOrgId);
-        if (nextOrg) onValueChange(nextOrg);
-      }}
-      aria-label="Organizations"
-    >
-      {orgs.map((org) => {
-        const fieldId = `organization-${org.id}`;
+  const { filtered, query, showMore, updateQuery, visible } = useOrgListWindow(orgs);
+  const hasMore = visible.length < filtered.length;
 
-        return (
-          <FieldLabel
-            key={org.id}
-            htmlFor={fieldId}
-            className="p-0! transition-colors hover:bg-input/10"
-          >
-            <Field orientation="horizontal">
-              <FieldTitle className="flex min-w-0 items-center gap-4">
-                <BuildingOffice2Icon className="size-6 shrink-0 text-muted-foreground" />
-                <div className="flex min-w-0 flex-col items-start">
-                  <span className="max-w-full truncate text-sm font-semibold">
-                    {org.name}
-                  </span>
-                  <span className="max-w-full truncate text-muted-foreground text-xs">
-                    {org.slug}
-                  </span>
-                </div>
-              </FieldTitle>
-              <RadioGroupItem
-                value={org.id}
-                id={fieldId}
-                className="group-hover/field-label:bg-foreground/25"
-              />
-            </Field>
-          </FieldLabel>
-        );
-      })}
-    </RadioGroup>
+  return (
+    <div className="flex flex-col gap-3">
+      {orgs.length > 10 ? (
+        <Input
+          aria-label="Search organizations"
+          placeholder="Search organizations..."
+          value={query}
+          onChange={(event) => updateQuery(event.target.value)}
+        />
+      ) : null}
+
+      <RadioGroup
+        value={value.id}
+        onValueChange={(nextOrgId) => {
+          const nextOrg = orgs.find((org) => org.id === nextOrgId);
+          if (nextOrg) onValueChange(nextOrg);
+        }}
+        aria-label="Organizations"
+      >
+        {visible.map((org) => {
+          const fieldId = `organization-${org.id}`;
+
+          return (
+            <FieldLabel
+              key={org.id}
+              htmlFor={fieldId}
+              className="p-0! transition-colors hover:bg-input/10"
+            >
+              <Field orientation="horizontal">
+                <FieldTitle className="flex min-w-0 items-center gap-4">
+                  <BuildingOffice2Icon className="size-6 shrink-0 text-muted-foreground" />
+                  <div className="flex min-w-0 flex-col items-start">
+                    <span className="max-w-full truncate text-sm font-semibold">
+                      {org.name}
+                    </span>
+                    <span className="max-w-full truncate text-muted-foreground text-xs">
+                      {org.slug}
+                    </span>
+                  </div>
+                </FieldTitle>
+                <RadioGroupItem
+                  value={org.id}
+                  id={fieldId}
+                  className="group-hover/field-label:bg-foreground/25"
+                />
+              </Field>
+            </FieldLabel>
+          );
+        })}
+      </RadioGroup>
+
+      {filtered.length === 0 && query.trim() ? (
+        <div className="text-sm text-muted-foreground">
+          No organizations match your search.
+        </div>
+      ) : null}
+
+      {hasMore ? (
+        <div className="flex flex-col items-start gap-2">
+          <Button type="button" variant="outline" size="sm" onClick={showMore}>
+            Show more
+          </Button>
+          <div className="text-xs text-muted-foreground">
+            Showing {visible.length} of {filtered.length} organizations
+          </div>
+        </div>
+      ) : null}
+    </div>
   )
 }

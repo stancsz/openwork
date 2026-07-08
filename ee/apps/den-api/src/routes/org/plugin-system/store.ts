@@ -62,6 +62,8 @@ import {
 import { db } from "../../../db.js"
 import { env } from "../../../env.js"
 import { roleIncludesOwner } from "../../../orgs.js"
+import { memberFacingMcpConnectionsEnabled } from "../../../capability-sources/external-mcp-rollout.js"
+import { resolveMarketplacePluginCloudReadiness } from "../../../mcp/marketplace-capabilities.js"
 
 type OrganizationId = PluginArchActorContext["organizationContext"]["organization"]["id"]
 type MemberId = PluginArchActorContext["organizationContext"]["currentMember"]["id"]
@@ -1596,6 +1598,55 @@ export async function createPlugin(input: { context: PluginArchActorContext; des
   return serializePlugin(row, 0)
 }
 
+export async function createPluginBundle(input: {
+  components?: { type: ConfigObjectRow["objectType"]; value: ConfigObjectInput }[]
+  context: PluginArchActorContext
+  description?: string | null
+  marketplaceId?: MarketplaceId
+  name: string
+  orgWide?: boolean
+}) {
+  if (input.marketplaceId) {
+    // Validate the publish target before creating anything so a bad marketplace cannot leave an orphan plugin.
+    await ensureEditableMarketplace(input.context, input.marketplaceId)
+  }
+
+  const plugin = await createPlugin({ context: input.context, description: input.description, name: input.name })
+
+  for (const component of input.components ?? []) {
+    const configObject = await createConfigObject({
+      context: input.context,
+      objectType: component.type,
+      pluginIds: [plugin.id],
+      sourceMode: "cloud",
+      value: component.value,
+    })
+    if (input.orgWide) {
+      await createResourceAccessGrant({
+        context: input.context,
+        resourceId: configObject.id,
+        resourceKind: "config_object",
+        value: { orgWide: true, role: "viewer" },
+      })
+    }
+  }
+
+  if (input.orgWide) {
+    await createResourceAccessGrant({
+      context: input.context,
+      resourceId: plugin.id,
+      resourceKind: "plugin",
+      value: { orgWide: true, role: "viewer" },
+    })
+  }
+
+  if (input.marketplaceId) {
+    await attachPluginToMarketplace({ context: input.context, marketplaceId: input.marketplaceId, pluginId: plugin.id })
+  }
+
+  return getPluginDetail(input.context, plugin.id)
+}
+
 export async function updatePlugin(input: { context: PluginArchActorContext; description?: string | null; name?: string; pluginId: PluginId }) {
   const row = await ensureEditablePlugin(input.context, input.pluginId)
   const updatedAt = new Date()
@@ -2031,11 +2082,25 @@ export async function getMarketplaceResolved(input: { context: PluginArchActorCo
     counts.set(objectType, (counts.get(objectType) ?? 0) + 1)
   }
 
+  const cloudReadinessByPlugin = memberFacingMcpConnectionsEnabled(input.context.organizationContext.organization.metadata, { gatingEnabled: env.mcpConnectionsGatingEnabled })
+    ? await resolveMarketplacePluginCloudReadiness({
+        organizationId,
+        member: {
+          orgMembershipId: input.context.organizationContext.currentMember.id,
+          teamIds: input.context.memberTeams.map((team) => team.id),
+        },
+        pluginIds,
+        desktopManifestPluginIds: pluginRows.flatMap((row) => defaultOpenWorkManifestForPlugin(row) ? [row.id] : []),
+      })
+    : new Map<string, never>()
+
   const plugins = pluginRows.map((row) => {
     const componentCounts = Object.fromEntries(componentCountsByPlugin.get(row.id) ?? new Map())
+    const cloudReadiness = cloudReadinessByPlugin.get(row.id)
     return {
       ...serializePlugin(row, memberCounts.get(row.id) ?? 0, [], componentCounts),
       componentCounts,
+      ...(cloudReadiness ? { cloudReadiness } : {}),
     }
   })
 

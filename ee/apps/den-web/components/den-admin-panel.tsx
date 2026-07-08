@@ -11,6 +11,9 @@ type ActivityFilter = "all" | "active-7d" | "active-30d" | "recurring" | "inacti
 type SortMode = "newest" | "recently-active" | "most-sign-ins" | "most-active-days" | "fastest-invite";
 
 const DEFAULT_FREE_SEAT_COUNT = 5;
+const ADMIN_OVERVIEW_CACHE_KEY = "den-admin-overview-cache";
+
+let cachedAdminOverviewPayload: unknown = null;
 
 type AdminBillingStatus = {
   status: "paid" | "unpaid" | "unavailable";
@@ -93,6 +96,11 @@ type AdminUser = {
   organizations: AdminUserOrganization[];
 };
 
+type AdminOrganizationCapabilities = {
+  installLinks: boolean;
+  mcpConnections: boolean;
+};
+
 type AdminOrganization = {
   id: string;
   name: string;
@@ -108,6 +116,7 @@ type AdminOrganization = {
   freeSeatCount: number;
   seatsFreeAdditional: number;
   billableSeatCount: number;
+  capabilities: AdminOrganizationCapabilities;
 };
 
 type AdminPayload = {
@@ -273,6 +282,7 @@ function parseAdminPayload(payload: unknown): AdminPayload | null {
 
         const plan = isRecord(value.plan) ? value.plan : {};
         const tier = plan.tier === "team" || plan.tier === "enterprise" ? plan.tier : "free";
+        const capabilities = isRecord(value.capabilities) ? value.capabilities : {};
 
         return {
           id: value.id,
@@ -288,7 +298,11 @@ function parseAdminPayload(payload: unknown): AdminPayload | null {
           seatLimit: toNumberValue(value.seatLimit),
           freeSeatCount: toNumberValue(value.freeSeatCount) || DEFAULT_FREE_SEAT_COUNT,
           seatsFreeAdditional: toNumberValue(value.seatsFreeAdditional),
-          billableSeatCount: toNumberValue(value.billableSeatCount)
+          billableSeatCount: toNumberValue(value.billableSeatCount),
+          capabilities: {
+            installLinks: capabilities.installLinks === true,
+            mcpConnections: capabilities.mcpConnections === true
+          }
         };
       })
       .filter((value): value is AdminOrganization => value !== null)
@@ -331,6 +345,74 @@ function parseAdminPayload(payload: unknown): AdminPayload | null {
     organizations,
     generatedAt: toStringValue(payload.generatedAt)
   };
+}
+
+function clearPersistedAdminOverviewCache() {
+  if (typeof window === "undefined") {
+    return;
+  }
+
+  try {
+    window.sessionStorage.removeItem(ADMIN_OVERVIEW_CACHE_KEY);
+  } catch {
+    // Ignore storage failures: the cache is only a best-effort fast path.
+  }
+}
+
+function clearAdminOverviewCache() {
+  cachedAdminOverviewPayload = null;
+  clearPersistedAdminOverviewCache();
+}
+
+function storeAdminOverviewCache(payload: unknown) {
+  cachedAdminOverviewPayload = payload;
+
+  if (typeof window === "undefined") {
+    return;
+  }
+
+  try {
+    const serialized = JSON.stringify(payload);
+    if (serialized === undefined) {
+      window.sessionStorage.removeItem(ADMIN_OVERVIEW_CACHE_KEY);
+      return;
+    }
+
+    window.sessionStorage.setItem(ADMIN_OVERVIEW_CACHE_KEY, serialized);
+  } catch {
+    clearPersistedAdminOverviewCache();
+  }
+}
+
+function readAdminOverviewCache(): AdminPayload | null {
+  const parsedCachedPayload = parseAdminPayload(cachedAdminOverviewPayload);
+  if (parsedCachedPayload) {
+    return parsedCachedPayload;
+  }
+
+  if (typeof window === "undefined") {
+    return null;
+  }
+
+  try {
+    const persistedPayload = window.sessionStorage.getItem(ADMIN_OVERVIEW_CACHE_KEY);
+    if (!persistedPayload) {
+      return null;
+    }
+
+    const storedPayload: unknown = JSON.parse(persistedPayload);
+    const parsedStoredPayload = parseAdminPayload(storedPayload);
+    if (!parsedStoredPayload) {
+      window.sessionStorage.removeItem(ADMIN_OVERVIEW_CACHE_KEY);
+      return null;
+    }
+
+    cachedAdminOverviewPayload = storedPayload;
+    return parsedStoredPayload;
+  } catch {
+    clearPersistedAdminOverviewCache();
+    return null;
+  }
 }
 
 function getFriendlyHtmlError(value: string): string | null {
@@ -406,6 +488,31 @@ async function requestJson(path: string) {
 async function patchJson(path: string, body: unknown) {
   const response = await fetch(`/api/den${path}`, {
     method: "PATCH",
+    credentials: "include",
+    headers: {
+      Accept: "application/json",
+      "Content-Type": "application/json"
+    },
+    body: JSON.stringify(body)
+  });
+
+  const text = await response.text();
+  let payload: unknown = null;
+
+  if (text) {
+    try {
+      payload = JSON.parse(text);
+    } catch {
+      payload = text;
+    }
+  }
+
+  return { response, payload };
+}
+
+async function putJson(path: string, body: unknown) {
+  const response = await fetch(`/api/den${path}`, {
+    method: "PUT",
     credentials: "include",
     headers: {
       Accept: "application/json",
@@ -777,6 +884,57 @@ function PlanPill({ tier }: { tier: AdminOrganization["plan"]["tier"] }) {
   );
 }
 
+function DenAdminLoadingShell() {
+  return (
+    <section className="mx-auto w-full max-w-6xl rounded-3xl border border-slate-200 bg-white shadow-sm" aria-busy="true">
+      <div className="border-b border-slate-200 px-6 py-6 sm:px-8">
+        <div className="flex flex-col gap-4 lg:flex-row lg:items-end lg:justify-between">
+          <div>
+            <p className="text-[0.7rem] font-semibold uppercase tracking-[0.18em] text-slate-500">Den admin</p>
+            <h1 className="mt-2 text-3xl font-semibold tracking-[-0.04em] text-slate-950">User backoffice</h1>
+            <p className="mt-2 max-w-3xl text-sm leading-7 text-slate-600">
+              Loading the latest signup, worker, and activity summaries.
+            </p>
+          </div>
+
+          <div className="flex flex-wrap items-center gap-3 animate-pulse">
+            <div className="h-10 w-48 rounded-full bg-slate-100" />
+            <div className="h-10 w-24 rounded-full border border-slate-200 bg-slate-50" />
+          </div>
+        </div>
+
+        <div className="mt-6 grid gap-3 sm:grid-cols-2 xl:grid-cols-6 animate-pulse">
+          {[0, 1, 2, 3, 4, 5].map((index) => (
+            <div key={index} className="rounded-2xl border border-slate-200 bg-slate-50/70 p-4">
+              <div className="h-3 w-20 rounded-full bg-slate-200" />
+              <div className="mt-3 h-8 w-16 rounded-lg bg-slate-200" />
+              <div className="mt-3 h-3 w-full rounded-full bg-slate-200" />
+              <div className="mt-2 h-3 w-2/3 rounded-full bg-slate-200" />
+            </div>
+          ))}
+        </div>
+      </div>
+
+      <div className="px-6 py-6 sm:px-8">
+        <div className="flex flex-wrap items-center justify-between gap-3 animate-pulse">
+          <div className="h-11 w-80 rounded-full border border-slate-200 bg-slate-50" />
+          <div className="h-10 w-28 rounded-full border border-slate-200 bg-slate-50" />
+        </div>
+
+        <div className="mt-6 rounded-2xl border border-slate-200 bg-white p-4 animate-pulse">
+          <div className="h-4 w-56 rounded-full bg-slate-200" />
+          <div className="mt-4 grid gap-3 md:grid-cols-2">
+            <div className="h-24 rounded-2xl bg-slate-100" />
+            <div className="h-24 rounded-2xl bg-slate-100" />
+          </div>
+          <div className="mt-4 h-3 w-full rounded-full bg-slate-200" />
+          <div className="mt-2 h-3 w-5/6 rounded-full bg-slate-200" />
+        </div>
+      </div>
+    </section>
+  );
+}
+
 export function DenAdminPanel() {
   const [accessState, setAccessState] = useState<AccessState>("loading");
   const [payload, setPayload] = useState<AdminPayload | null>(null);
@@ -796,8 +954,11 @@ export function DenAdminPanel() {
   const [savingOrgId, setSavingOrgId] = useState<string | null>(null);
   const [freeSeatsDialog, setFreeSeatsDialog] = useState<{ org: AdminOrganization; totalFreeSeats: string } | null>(null);
   const [savingFreeSeatsOrgId, setSavingFreeSeatsOrgId] = useState<string | null>(null);
+  const [savingCapabilityOrgId, setSavingCapabilityOrgId] = useState<string | null>(null);
+  const [capabilityError, setCapabilityError] = useState<{ orgId: string; message: string } | null>(null);
   const [deleteUserDialog, setDeleteUserDialog] = useState<AdminUser | null>(null);
   const [deletingUserId, setDeletingUserId] = useState<string | null>(null);
+  const [orgRenderLimit, setOrgRenderLimit] = useState(200);
 
   const loadOverview = useCallback(async (loadBilling: boolean) => {
     setRefreshing(true);
@@ -808,12 +969,14 @@ export function DenAdminPanel() {
       const { response, payload: nextPayload } = await requestJson(`/v1/admin/overview${suffix}`);
 
       if (response.status === 401) {
+        clearAdminOverviewCache();
         setAccessState("signed-out");
         setPayload(null);
         return;
       }
 
       if (response.status === 403) {
+        clearAdminOverviewCache();
         setAccessState("forbidden");
         setPayload(null);
         return;
@@ -834,6 +997,7 @@ export function DenAdminPanel() {
         return;
       }
 
+      storeAdminOverviewCache(nextPayload);
       setIncludeBilling(parsed.summary.billingLoaded);
       setAccessState("ready");
       setPayload(parsed);
@@ -847,6 +1011,13 @@ export function DenAdminPanel() {
   }, []);
 
   useEffect(() => {
+    const cachedPayload = readAdminOverviewCache();
+    if (cachedPayload) {
+      setPayload(cachedPayload);
+      setIncludeBilling(cachedPayload.summary.billingLoaded);
+      setAccessState("ready");
+    }
+
     void loadOverview(false);
   }, [loadOverview]);
 
@@ -982,6 +1153,8 @@ export function DenAdminPanel() {
 
     return payload.organizations.filter((org) => `${org.name} ${org.slug} ${org.id}`.toLowerCase().includes(normalizedQuery));
   }, [payload, query]);
+  const renderedOrganizations = filteredOrganizations.slice(0, orgRenderLimit);
+  const remainingOrganizationCount = filteredOrganizations.length - renderedOrganizations.length;
 
   useEffect(() => {
     if (!payload) {
@@ -1062,6 +1235,49 @@ export function DenAdminPanel() {
       setSavingFreeSeatsOrgId(null);
     }
   }, [freeSeatsDialog, includeBilling, loadOverview]);
+
+  const setOrganizationCapabilityLocally = useCallback((orgId: string, key: keyof AdminOrganizationCapabilities, enabled: boolean) => {
+    setPayload((current) => {
+      if (!current) {
+        return current;
+      }
+
+      return {
+        ...current,
+        organizations: current.organizations.map((org) =>
+          org.id === orgId ? { ...org, capabilities: { ...org.capabilities, [key]: enabled } } : org
+        )
+      };
+    });
+  }, []);
+
+  const saveOrganizationCapability = useCallback(async (org: AdminOrganization, key: keyof AdminOrganizationCapabilities, enabled: boolean) => {
+    setSavingCapabilityOrgId(org.id);
+    setError(null);
+    setCapabilityError(null);
+    // Optimistic: flip the toggle immediately, roll back if the PUT fails.
+    setOrganizationCapabilityLocally(org.id, key, enabled);
+
+    try {
+      const { response, payload: nextPayload } = await putJson(`/v1/admin/organizations/${org.id}/capabilities`, {
+        capabilities: { [key]: enabled }
+      });
+
+      if (!response.ok) {
+        setOrganizationCapabilityLocally(org.id, key, !enabled);
+        const message = getErrorMessage(nextPayload, `Could not update capabilities for ${org.name}.`);
+        setError(message);
+        setCapabilityError({ orgId: org.id, message });
+      }
+    } catch (nextError) {
+      setOrganizationCapabilityLocally(org.id, key, !enabled);
+      const message = nextError instanceof Error ? nextError.message : "Unknown network error";
+      setError(message);
+      setCapabilityError({ orgId: org.id, message });
+    } finally {
+      setSavingCapabilityOrgId(null);
+    }
+  }, [setOrganizationCapabilityLocally]);
 
   const deleteUser = useCallback(async () => {
     if (!deleteUserDialog) {
@@ -1170,11 +1386,7 @@ export function DenAdminPanel() {
   }, [filteredUsers, selectedUserId]);
 
   if (accessState === "loading") {
-    return (
-      <section className="mx-auto w-full max-w-6xl rounded-3xl border border-slate-200 bg-white p-8 shadow-sm">
-        <p className="text-sm text-slate-500">Loading Den admin...</p>
-      </section>
-    );
+    return <DenAdminLoadingShell />;
   }
 
   if (accessState === "signed-out" || accessState === "forbidden" || accessState === "error") {
@@ -1319,7 +1531,7 @@ export function DenAdminPanel() {
         ) : null}
 
         {viewMode === "organizations" ? (
-          <div className="mt-4">
+          <div className="mt-4" data-testid="admin-orgs-page">
             <label className="grid w-full max-w-xl gap-2">
               <span className="text-[0.68rem] font-semibold uppercase tracking-[0.14em] text-slate-500">Search organizations</span>
               <input
@@ -1443,12 +1655,14 @@ export function DenAdminPanel() {
 
         <div className="mt-6 grid gap-3">
           {viewMode === "organizations" ? (
-            filteredOrganizations.length > 0 ? filteredOrganizations.map((org) => {
+            filteredOrganizations.length > 0 ? (
+              <>
+                {renderedOrganizations.map((org) => {
               const draft = orgDrafts[org.id] ?? { tier: org.plan.tier, seatLimit: String(org.seatLimit) };
               const changed = draft.tier !== org.plan.tier || draft.seatLimit !== String(org.seatLimit);
 
               return (
-                <div key={org.id} className="rounded-2xl border border-slate-200 bg-white px-4 py-4">
+                <div key={org.id} data-testid={`admin-org-row-${org.slug}`} className="rounded-2xl border border-slate-200 bg-white px-4 py-4">
                   <div className="flex flex-col gap-3 lg:flex-row lg:items-start lg:justify-between">
                     <div className="min-w-0">
                       <div className="flex flex-wrap items-center gap-2">
@@ -1494,6 +1708,45 @@ export function DenAdminPanel() {
                     </div>
                   </div>
 
+                  <div className="mt-4 border-t border-slate-200 pt-4">
+                    <p className="text-[0.68rem] font-semibold uppercase tracking-[0.14em] text-slate-500">Capabilities</p>
+                    <div className="mt-2 flex flex-wrap gap-x-4 gap-y-2">
+                      <label className="inline-flex items-center gap-2 text-sm text-slate-700">
+                        <input
+                          type="checkbox"
+                          data-testid="admin-capability-installLinks"
+                          checked={org.capabilities.installLinks}
+                          disabled={savingCapabilityOrgId === org.id}
+                          onChange={(event) => {
+                            void saveOrganizationCapability(org, "installLinks", event.target.checked);
+                          }}
+                          className="h-4 w-4 rounded border-slate-300"
+                        />
+                        Install links
+                      </label>
+                      <label className="inline-flex items-center gap-2 text-sm text-slate-700">
+                        <input
+                          type="checkbox"
+                          data-testid="admin-capability-mcpConnections"
+                          checked={org.capabilities.mcpConnections}
+                          disabled={savingCapabilityOrgId === org.id}
+                          onChange={(event) => {
+                            void saveOrganizationCapability(org, "mcpConnections", event.target.checked);
+                          }}
+                          className="h-4 w-4 rounded border-slate-300"
+                        />
+                        OpenWork Connect (alpha)
+                      </label>
+                    </div>
+                    {capabilityError?.orgId === org.id ? (
+                      <p data-testid="admin-capability-error" className="mt-2 rounded-xl border border-red-200 bg-red-50 px-3 py-2 text-xs leading-5 text-red-700">
+                        Save failed — the change was reverted. {capabilityError.message}
+                      </p>
+                    ) : null}
+                    <p className="mt-1 text-xs text-slate-400">Off by default. Lets workspace admins mint desktop install links for this organization.</p>
+                    <p className="mt-1 text-xs text-slate-400">Off by default. Enables member-facing org connections, marketplace capabilities on the agent rail, and the desktop Connect tab.</p>
+                  </div>
+
                   <div className="mt-4 grid gap-3 border-t border-slate-200 pt-4 lg:grid-cols-[12rem_10rem_auto] lg:items-end">
                     <label className="grid gap-2">
                       <span className="text-[0.68rem] font-semibold uppercase tracking-[0.14em] text-slate-500">Plan</span>
@@ -1535,7 +1788,23 @@ export function DenAdminPanel() {
                   </div>
                 </div>
               );
-            }) : (
+                })}
+                {remainingOrganizationCount > 0 ? (
+                  <div className="flex flex-col gap-3 rounded-2xl border border-slate-200 bg-slate-50 px-4 py-4 sm:flex-row sm:items-center sm:justify-between">
+                    <p className="text-sm text-slate-500">
+                      Showing {renderedOrganizations.length} of {filteredOrganizations.length} organizations
+                    </p>
+                    <button
+                      type="button"
+                      onClick={() => setOrgRenderLimit((current) => current + 200)}
+                      className="inline-flex items-center justify-center rounded-full border border-slate-200 bg-white px-4 py-2 text-sm font-semibold text-slate-700 transition hover:border-slate-300"
+                    >
+                      Show more
+                    </button>
+                  </div>
+                ) : null}
+              </>
+            ) : (
               <div className="rounded-2xl border border-dashed border-slate-300 bg-slate-50 px-5 py-10 text-center">
                 <p className="text-base font-semibold text-slate-950">No organizations match</p>
                 <p className="mt-2 text-sm leading-7 text-slate-500">Try a different search.</p>

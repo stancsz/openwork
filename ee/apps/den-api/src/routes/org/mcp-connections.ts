@@ -34,7 +34,7 @@ import {
 import { memberFacingMcpConnectionsEnabled } from "../../capability-sources/external-mcp-rollout.js"
 import { listNativeProviderUsableEntries } from "../../capability-sources/native-provider-connections.js"
 import { connectCallbackPage } from "../../capability-sources/oauth-callback-page.js"
-import { getConnectedAccount } from "../../capability-sources/oauth-credentials.js"
+import { getConnectedAccount, upsertOrgOAuthClient } from "../../capability-sources/oauth-credentials.js"
 import { assertPublicUrl } from "../../capability-sources/url-guard.js"
 import type { MemberTeamSummary } from "../../orgs.js"
 import { EXTERNAL_MCP_PRESETS } from "../../capability-sources/external-mcp-presets.js"
@@ -55,6 +55,10 @@ const createConnectionBodySchema = z.object({
   authType: z.enum(["oauth", "apikey", "none"]),
   credentialMode: z.enum(["shared", "per_member"]).optional().default("shared"),
   apiKey: z.string().trim().min(1).max(4096).optional(),
+  oauthClient: z.object({
+    clientId: z.string().trim().min(1).max(512),
+    clientSecret: z.string().trim().min(1).max(4096).optional(),
+  }).optional(),
   /** Who can USE the connection. Defaults to org-wide so the naive quick-add path matches expectations, but it's an explicit, editable choice. */
   access: accessInputSchema.optional().default({ orgWide: true, memberIds: [], teamIds: [] }),
 })
@@ -84,6 +88,10 @@ const connectionResponseSchema = z.object({
   connectedAt: z.string().nullable(),
   /** For per_member connections: whether the CALLING member has connected their own account. Always true for connected shared connections. */
   connectedForMe: z.boolean(),
+  /** Present on native provider rows when the member's saved grant is missing currently selected scopes. */
+  needsReconnect: z.boolean().optional(),
+  /** Native provider feature ids whose scopes are missing from the member's saved grant. */
+  missingFeatures: z.array(z.string()).optional(),
   /** Present only for scope=manageable (admin) listings. */
   access: accessSummarySchema.nullable(),
 }).meta({ ref: "ExternalMcpConnectionResponse" })
@@ -96,6 +104,8 @@ const connectionCreatedResponseSchema = connectionResponseSchema.extend({
   links: z.object({
     /** Where members connect their own account for per_member connections. Share this with the team. */
     yourConnections: z.string(),
+    /** The exact OAuth redirect URL to whitelist in pre-registered provider apps. */
+    oauthCallback: z.string(),
   }),
 }).meta({ ref: "ExternalMcpConnectionCreatedResponse" })
 
@@ -104,12 +114,19 @@ const connectionCreatedResponseSchema = connectionResponseSchema.extend({
  * connection, members connect their own account in the den-web dashboard.
  * betterAuthUrl is the den-web public origin in every deployment layout.
  */
-function memberConnectLinks() {
-  return { yourConnections: `${env.betterAuthUrl}/dashboard/your-connections` }
+function memberConnectLinks(request: Request, connectionId: string) {
+  return {
+    yourConnections: `${env.betterAuthUrl}/dashboard/your-connections`,
+    oauthCallback: callbackRedirectUri(request, connectionId),
+  }
 }
 
 export function isAgentApiKeyConnection(input: { authType: string; sessionId?: string | null }) {
   return input.authType === "apikey" && input.sessionId === "mcp_internal"
+}
+
+export function isAgentOAuthClientConnection(input: { oauthClient?: unknown; sessionId?: string | null }) {
+  return Boolean(input.oauthClient) && input.sessionId === "mcp_internal"
 }
 
 const listConnectionsQuerySchema = z.object({
@@ -123,6 +140,7 @@ const presetResponseSchema = z.object({
   description: z.string(),
   url: z.string(),
   authType: z.enum(["oauth", "apikey", "none"]),
+  requiresOAuthClient: z.boolean().optional(),
 }).meta({ ref: "ExternalMcpPresetResponse" })
 
 const presetListResponseSchema = z.object({
@@ -133,6 +151,27 @@ const connectStartResponseSchema = z.object({
   status: z.enum(["connected", "needs_auth"]),
   authorizeUrl: z.string().nullable(),
 }).meta({ ref: "ExternalMcpConnectStartResponse" })
+
+const connectStartFailedSchema = z.object({
+  error: z.literal("oauth_handshake_failed"),
+  message: z.string(),
+}).meta({ ref: "ExternalMcpConnectStartFailedError" })
+
+const connectionValidationFailedSchema = z.object({
+  error: z.literal("connection_validation_failed"),
+  message: z.string(),
+}).meta({ ref: "ExternalMcpConnectionValidationFailedError" })
+
+function errorMessage(error: unknown) {
+  return error instanceof Error ? error.message : String(error)
+}
+
+function errorForLog(error: unknown) {
+  if (error instanceof Error) {
+    return { name: error.name, message: error.message, stack: error.stack }
+  }
+  return { message: String(error) }
+}
 
 function isConnectionConnected(row: ExternalMcpConnectionRow): boolean {
   if (row.credentialMode === "per_member") {
@@ -209,7 +248,7 @@ export function registerMcpConnectionRoutes<T extends { Variables: OrgRouteVaria
     describeRoute({
       tags: ["Capability Sources"],
       summary: "List predefined External MCP Connection presets",
-      description: "Common third-party MCP servers (Notion, Linear, Stripe, ...) an admin can add with one click, prefilled with a real name and URL.",
+      description: "Common third-party MCP servers (Notion, Linear, Stripe, Slack, ...) an admin can add with one click, prefilled with a real name and URL.",
       responses: {
         200: jsonResponse("Presets.", presetListResponseSchema),
         401: jsonResponse("The caller must be signed in.", unauthorizedSchema),
@@ -285,12 +324,13 @@ export function registerMcpConnectionRoutes<T extends { Variables: OrgRouteVaria
       // (connect/start, callbacks, client secrets) stays agent-blocked.
       tags: ["Capability Sources"],
       summary: "Register a new External MCP Connection for the org",
-      description: "Admin-only. Registers a third-party MCP server by name + URL and grants access (org-wide, teams, or members). Use GET /v1/mcp-connections/presets for known server URLs (Notion, Linear, Stripe, Sentry, Context7). For credentialMode per_member, each member connects their own account afterwards — share links.yourConnections from the response so teammates know where to sign in. API-key connections cannot be created through the agent surface; use the dashboard.",
+      description: "Admin-only. Registers a third-party MCP server by name + URL and grants access (org-wide, teams, or members). Use GET /v1/mcp-connections/presets for known server URLs (Notion, Linear, Stripe, Sentry, Slack, Context7). For credentialMode per_member, each member connects their own account afterwards — share links.yourConnections from the response so teammates know where to sign in. For servers with pre-registered OAuth apps, whitelist links.oauthCallback. API-key and OAuth-client credentials cannot be created through the agent surface; use the dashboard.",
       responses: {
         200: jsonResponse("Connection created.", connectionCreatedResponseSchema),
         400: jsonResponse("Invalid request.", invalidRequestSchema),
         401: jsonResponse("The caller must be signed in.", unauthorizedSchema),
         403: jsonResponse("Only workspace owners and admins can add MCP connections.", forbiddenSchema),
+        502: jsonResponse("The upstream MCP server could not be reached.", connectionValidationFailedSchema),
       },
     }),
     orgMemberRoute(),
@@ -301,10 +341,17 @@ export function registerMcpConnectionRoutes<T extends { Variables: OrgRouteVaria
       if (!admin.ok) return c.json(admin.response, orgAccessFailureStatus(admin.response))
 
       const body = c.req.valid("json")
+      const sessionId = c.get("session")?.id
       // Secrets must not travel through chat transcripts: when the caller is
       // the agent (internal MCP principal), refuse API-key connections.
-      if (isAgentApiKeyConnection({ authType: body.authType, sessionId: c.get("session")?.id })) {
+      if (isAgentOAuthClientConnection({ oauthClient: body.oauthClient, sessionId })) {
+        return c.json({ error: "invalid_request", message: "OAuth client credentials cannot be set from the agent. Add them in the OpenWork Cloud dashboard under Extensions." }, 400)
+      }
+      if (isAgentApiKeyConnection({ authType: body.authType, sessionId })) {
         return c.json({ error: "invalid_request", message: "API-key connections cannot be created from the agent. Add them in the OpenWork Cloud dashboard under Extensions." }, 400)
+      }
+      if (body.oauthClient && body.authType !== "oauth") {
+        return c.json({ error: "invalid_request", message: "oauthClient is only allowed when authType is oauth." }, 400)
       }
       if (body.authType === "apikey" && !body.apiKey) {
         return c.json({ error: "invalid_request", message: "apiKey is required when authType is apikey." }, 400)
@@ -337,16 +384,36 @@ export function registerMcpConnectionRoutes<T extends { Variables: OrgRouteVaria
         },
       })
 
+      if (body.oauthClient) {
+        await upsertOrgOAuthClient({
+          organizationId: payload.organization.id,
+          providerId: created.id,
+          clientId: body.oauthClient.clientId,
+          clientSecret: body.oauthClient.clientSecret ?? null,
+          createdByOrgMembershipId: payload.currentMember.id,
+        })
+      }
+
       if (body.authType !== "oauth") {
         // No OAuth dance needed — validate the server is real and reachable now.
-        await connectExternalMcp(created, callbackRedirectUri(c.req.raw, created.id))
+        try {
+          await connectExternalMcp(created, callbackRedirectUri(c.req.raw, created.id))
+        } catch (error) {
+          console.error("external_mcp_connection_validation_failed", {
+            connectionId: created.id,
+            organizationId: payload.organization.id,
+            connectionUrl: created.url,
+            error: errorForLog(error),
+          })
+          return c.json({ error: "connection_validation_failed", message: `Could not reach "${created.name}" at its MCP URL: ${errorMessage(error)}` }, 502)
+        }
       }
 
       const refreshed = await getExternalMcpConnection({ organizationId: payload.organization.id, connectionId: created.id })
       const response = await toConnectionResponse(refreshed ?? created, { callerOrgMembershipId: payload.currentMember.id, includeAccess: true })
       // The classical handoff: whoever created this (human or agent) gets
       // the link where members connect their own account, ready to share.
-      return c.json({ ...response, links: memberConnectLinks() })
+      return c.json({ ...response, links: memberConnectLinks(c.req.raw, created.id) })
     },
   )
 
@@ -464,6 +531,7 @@ export function registerMcpConnectionRoutes<T extends { Variables: OrgRouteVaria
         200: jsonResponse("Authorize URL, or already connected.", connectStartResponseSchema),
         401: jsonResponse("The caller must be signed in.", unauthorizedSchema),
         404: jsonResponse("Unknown connection.", connectionNotFoundSchema),
+        502: jsonResponse("OAuth handshake failed.", connectStartFailedSchema),
       },
     }),
     orgMemberRoute(),
@@ -481,7 +549,7 @@ export function registerMcpConnectionRoutes<T extends { Variables: OrgRouteVaria
       if (connection.credentialMode === "shared") {
         // Connecting a shared credential IS the org-level integration setup —
         // admin-only, like creating the connection itself.
-        const admin = ensureOrganizationAdmin(c, "Only workspace owners and admins can connect a shared-credential connection.")
+        const admin = ensureOrganizationAdmin(c, "Only workspace owners and admins can connect an org-account connection.")
         if (!admin.ok) return c.json(admin.response, orgAccessFailureStatus(admin.response))
       } else {
         // Per-member: any member GRANTED the connection may connect their own
@@ -498,26 +566,36 @@ export function registerMcpConnectionRoutes<T extends { Variables: OrgRouteVaria
         }
       }
 
-      // Our own signed state token identifies which connection AND which
-      // member this is for once the external server redirects back. It MUST
-      // travel as the standard OAuth `state` param — a custom param would
-      // simply be dropped, since only `state` is guaranteed to round-trip on
-      // any spec-compliant authorization server (see ExternalMcpOAuthProvider.state()).
-      const signedState = createOAuthStateToken({
-        organizationId: payload.organization.id,
-        orgMembershipId: payload.currentMember.id,
-        providerId: connectionId,
-        secret: env.betterAuthSecret,
-      })
-      const redirectUri = callbackRedirectUri(c.req.raw, connectionId)
-      const member = connection.credentialMode === "per_member"
-        ? { orgMembershipId: payload.currentMember.id }
-        : undefined
-      const result = await connectExternalMcp(connection, redirectUri, signedState, member)
-      if (result.status === "connected") {
-        return c.json({ status: "connected" as const, authorizeUrl: null })
+      try {
+        // Our own signed state token identifies which connection AND which
+        // member this is for once the external server redirects back. It MUST
+        // travel as the standard OAuth `state` param — a custom param would
+        // simply be dropped, since only `state` is guaranteed to round-trip on
+        // any spec-compliant authorization server (see ExternalMcpOAuthProvider.state()).
+        const signedState = createOAuthStateToken({
+          organizationId: payload.organization.id,
+          orgMembershipId: payload.currentMember.id,
+          providerId: connectionId,
+          secret: env.betterAuthSecret,
+        })
+        const redirectUri = callbackRedirectUri(c.req.raw, connectionId)
+        const member = connection.credentialMode === "per_member"
+          ? { orgMembershipId: payload.currentMember.id }
+          : undefined
+        const result = await connectExternalMcp(connection, redirectUri, signedState, member)
+        if (result.status === "connected") {
+          return c.json({ status: "connected" as const, authorizeUrl: null })
+        }
+        return c.json({ status: "needs_auth" as const, authorizeUrl: result.authorizeUrl })
+      } catch (error) {
+        console.error("external_mcp_connect_start_oauth_handshake_failed", {
+          connectionId: connection.id,
+          organizationId: payload.organization.id,
+          connectionUrl: connection.url,
+          error: errorForLog(error),
+        })
+        return c.json({ error: "oauth_handshake_failed", message: `The OAuth handshake with "${connection.name}" failed: ${errorMessage(error)}` }, 502)
       }
-      return c.json({ status: "needs_auth" as const, authorizeUrl: result.authorizeUrl })
     },
   )
 

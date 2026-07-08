@@ -45,7 +45,14 @@
           {
             "group": "Self-host",
             "pages": [
-              "start-here/self-host"
+              "start-here/self-host",
+              "start-here/github-connector-helm"
+            ]
+          },
+          {
+            "group": "Troubleshooting",
+            "pages": [
+              "start-here/troubleshooting/diagnostic-prompts"
             ]
           },
           {
@@ -79,6 +86,7 @@
             ]
           },
           "cloud/members-and-rbac",
+          "cloud/sso-microsoft-entra",
           "cloud/security-and-operations",
           "cloud/enterprise"
         ]

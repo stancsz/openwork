@@ -44,6 +44,11 @@ on:
         required: false
         type: boolean
         default: false
+      smoke_check_deployment:
+        description: "Run the compiled installer against the deployment API (requires GitHub-hosted runners to reach api_url)"
+        required: false
+        type: boolean
+        default: false
 
 permissions:
   contents: read
@@ -110,6 +115,28 @@ jobs:
           fi
           echo "slug=$slug" >> "$GITHUB_OUTPUT"
 
+      - name: Install dependencies
+        shell: bash
+        run: |
+          set -euo pipefail
+          # Build the workspace dependency's dist first: @openwork/install-config's
+          # "default" export points at dist/, which a fresh checkout lacks.
+          (cd packages/install-config && bun install && bun run build)
+          # bun 1.3.9 on Windows can fail to create the parent-relative
+          # workspace symlink (ENOENT) after installing every other package;
+          # the copy fallback below repairs exactly that case.
+          (cd apps/installer && bun install) || [ "${{ matrix.os_type }}" = "windows" ]
+          if [ ! -e "apps/installer/node_modules/@openwork/install-config/package.json" ]; then
+            rm -rf "apps/installer/node_modules/@openwork/install-config"
+            mkdir -p "apps/installer/node_modules/@openwork"
+            cp -R "packages/install-config" "apps/installer/node_modules/@openwork/install-config"
+          fi
+          test -e "apps/installer/node_modules/@openwork/install-config/package.json"
+
+      - name: Test
+        shell: bash
+        run: cd apps/installer && bun test
+
       - name: Write client build config
         shell: bash
         env:
@@ -132,14 +159,6 @@ jobs:
             await Bun.write("apps/installer/src/generated/build-config.ts", config)
           '
 
-      - name: Install dependencies
-        shell: bash
-        run: bun install --cwd apps/installer
-
-      - name: Test
-        shell: bash
-        run: cd apps/installer && bun test
-
       - name: Compile installer
         shell: bash
         run: |
@@ -150,7 +169,7 @@ jobs:
 
       - name: Smoke test (headless dry run against the client deployment)
         # Cross-compiled mac x64 output cannot run on the arm64 runner.
-        if: matrix.bun_target != 'bun-darwin-x64'
+        if: github.event.inputs.smoke_check_deployment == 'true' && matrix.bun_target != 'bun-darwin-x64'
         shell: bash
         env:
           OPENWORK_DESKTOP_BOOTSTRAP_PATH: ${{ runner.temp }}/smoke/desktop-bootstrap.json

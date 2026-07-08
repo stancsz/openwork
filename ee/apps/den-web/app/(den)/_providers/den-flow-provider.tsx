@@ -58,12 +58,14 @@ import {
 import { EMPTY_RUNTIME_CONFIG, getRuntimeConfig, type DenWebRuntimeConfig } from "../_lib/runtime-config";
 import {
   PENDING_ORG_INVITATION_STORAGE_KEY,
+  PENDING_ORG_SELECTION_STORAGE_KEY,
   PENDING_WORKSPACE_CLAIM_STORAGE_KEY,
   getInferenceRoute,
   getJoinOrgRoute,
   getOrgDashboardRoute,
   getWorkspaceClaimRoute,
   parseOrgListPayload,
+  shouldOfferOrgSelection,
 } from "../_lib/den-org";
 
 type LaunchWorkerResult = "success" | "limit" | "error";
@@ -132,6 +134,7 @@ type DenFlowContextValue = {
   copiedField: string | null;
   events: LaunchEvent[];
   runtimeConfig: DenWebRuntimeConfig;
+  runtimeConfigLoaded: boolean;
   openworkDeepLink: string | null;
   openworkAppConnectUrl: string | null;
   hasWorkspaceScopedUrl: boolean;
@@ -244,6 +247,8 @@ export function DenFlowProvider({ children }: { children: ReactNode }) {
   const [runtimeError, setRuntimeError] = useState<string | null>(null);
   const [runtimeUpgradeBusy, setRuntimeUpgradeBusy] = useState(false);
   const [runtimeConfig, setRuntimeConfig] = useState<DenWebRuntimeConfig>(EMPTY_RUNTIME_CONFIG);
+  const [runtimeConfigLoaded, setRuntimeConfigLoaded] = useState(false);
+  const isSingleOrgMode = runtimeConfigLoaded && runtimeConfig.orgMode === "single_org";
 
   const [onboardingIntent, setOnboardingIntent] = useState<OnboardingIntent | null>(null);
   const onboardingAutoLaunchKeyRef = useRef<string | null>(null);
@@ -481,6 +486,11 @@ export function DenFlowProvider({ children }: { children: ReactNode }) {
   }
 
   async function resendVerificationCode() {
+    if (isSingleOrgMode) {
+      setAuthError("Email verification codes are not used for this single-organization deployment.");
+      return;
+    }
+
     const trimmedEmail = email.trim();
     if (!trimmedEmail) {
       setAuthError("Enter your email before requesting a verification code.");
@@ -518,6 +528,12 @@ export function DenFlowProvider({ children }: { children: ReactNode }) {
 
   async function submitVerificationCode(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
+    if (isSingleOrgMode) {
+      setVerificationRequired(false);
+      setAuthError("Email verification codes are not used for this single-organization deployment.");
+      return null;
+    }
+
     const trimmedEmail = email.trim();
     const otp = verificationCode.trim();
     if (!trimmedEmail || !otp) {
@@ -947,6 +963,10 @@ export function DenFlowProvider({ children }: { children: ReactNode }) {
 
   async function resolveDashboardRoute() {
     const orgDirectory = await loadOrgDirectory();
+    if (typeof window !== "undefined" && shouldOfferOrgSelection(orgDirectory.orgs)) {
+      window.sessionStorage.setItem(PENDING_ORG_SELECTION_STORAGE_KEY, "1");
+    }
+
     const activeOrgSlug = orgDirectory.activeOrgSlug ?? orgDirectory.orgs[0]?.slug ?? null;
     return activeOrgSlug ? getOrgDashboardRoute(activeOrgSlug) : null;
   }
@@ -1003,7 +1023,11 @@ export function DenFlowProvider({ children }: { children: ReactNode }) {
   }
 
   async function resolveUserLandingRoute() {
-    if (!user || desktopAuthRequested) {
+    // Deliberately ignores desktopAuthRequested: callers that auto-redirect
+    // (auth-screen) gate on it themselves, while explicit actions — the
+    // "Go to dashboard" button on the signed-in handoff card — must resolve
+    // a destination even mid desktop handoff.
+    if (!user) {
       return null;
     }
 
@@ -1065,7 +1089,7 @@ export function DenFlowProvider({ children }: { children: ReactNode }) {
       });
 
       if (!response.ok) {
-        if (response.status === 403) {
+        if (response.status === 403 && !isSingleOrgMode) {
           openVerificationStep(trimmedEmail, `Enter the 6-digit code we sent to ${trimmedEmail} to finish verifying your email.`);
         }
         setAuthError(getErrorMessage(payload, `Authentication failed with ${response.status}.`));
@@ -1099,6 +1123,11 @@ export function DenFlowProvider({ children }: { children: ReactNode }) {
             method: "email",
             status: signInResult.response.status
           });
+          return null;
+        }
+
+        if (isSingleOrgMode) {
+          setAuthError(getErrorMessage(signInResult.payload, "Account created, but the server did not start a session. Try signing in again."));
           return null;
         }
 
@@ -1719,6 +1748,7 @@ export function DenFlowProvider({ children }: { children: ReactNode }) {
     void getRuntimeConfig().then((config) => {
       if (!cancelled) {
         setRuntimeConfig(config);
+        setRuntimeConfigLoaded(true);
       }
     });
 
@@ -2090,6 +2120,7 @@ export function DenFlowProvider({ children }: { children: ReactNode }) {
     copiedField,
     events,
     runtimeConfig,
+    runtimeConfigLoaded,
     openworkDeepLink,
     openworkAppConnectUrl,
     hasWorkspaceScopedUrl,

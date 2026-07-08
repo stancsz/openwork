@@ -204,6 +204,20 @@
       "when": 1783113137881,
       "tag": "0029_rare_hellfire_club",
       "breakpoints": true
+    },
+    {
+      "idx": 30,
+      "version": "5",
+      "when": 1783210357840,
+      "tag": "0030_tidy_blob",
+      "breakpoints": true
+    },
+    {
+      "idx": 31,
+      "version": "5",
+      "when": 1783392573893,
+      "tag": "0031_telemetry_session_dimension",
+      "breakpoints": true
     }
   ]
 }

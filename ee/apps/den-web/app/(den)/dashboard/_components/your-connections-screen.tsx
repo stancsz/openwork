@@ -1,12 +1,16 @@
 "use client";
 
 import { useEffect, useRef, useState } from "react";
-import { Check, Loader2, Plug } from "lucide-react";
+import { AlertTriangle, Check, Loader2, Plug } from "lucide-react";
 import { DenButton } from "../../_components/ui/button";
 import { DashboardPageTemplate } from "../../_components/ui/dashboard-page-template";
+import { getOrgAccessFlags } from "../../_lib/den-org";
+import { useOrgDashboard } from "../_providers/org-dashboard-provider";
 import { IntegrationIcon } from "./integration-icon";
 import {
+  canDisconnectNativeProviderAccount,
   type ExternalMcpConnection,
+  useDisconnectMyProviderAccount,
   useMcpConnections,
   useStartMcpConnectionOAuth,
 } from "./mcp-connections-data";
@@ -20,11 +24,21 @@ const OAUTH_POLL_TIMEOUT_MS = 90_000;
  * sees it here. For "per_member" connections this is where each person
  * connects their own account — after which their agent's
  * search_capabilities/execute_capability calls run as them.
+ * Admins can also finish a shared-credential connection's OAuth here when
+ * the org account was published but never authorized.
  */
 export function YourConnectionsScreen() {
   const { data: connections = [], isLoading, error, refetch } = useMcpConnections("usable");
+  const { orgContext } = useOrgDashboard();
+  const access = getOrgAccessFlags(
+    orgContext?.currentMember.role ?? "member",
+    orgContext?.currentMember.isOwner ?? false,
+    orgContext?.roles,
+  );
   const startOAuth = useStartMcpConnectionOAuth();
+  const disconnectProvider = useDisconnectMyProviderAccount();
   const [pollingConnectionId, setPollingConnectionId] = useState<string | null>(null);
+  const [rowError, setRowError] = useState<{ connectionId: string; message: string } | null>(null);
   const pollTimer = useRef<ReturnType<typeof setInterval> | null>(null);
 
   useEffect(() => {
@@ -47,13 +61,14 @@ export function YourConnectionsScreen() {
     pollTimer.current = setInterval(async () => {
       const result = await refetch();
       const connection = result.data?.find((entry) => entry.id === connectionId);
-      if (connection?.connectedForMe || Date.now() - startedAt > OAUTH_POLL_TIMEOUT_MS) {
+      if ((connection?.connectedForMe && connection.needsReconnect !== true) || Date.now() - startedAt > OAUTH_POLL_TIMEOUT_MS) {
         stopPolling();
       }
     }, OAUTH_POLL_INTERVAL_MS);
   }
 
   async function handleConnectMyAccount(connectionId: string) {
+    setRowError(null);
     const result = await startOAuth.mutateAsync(connectionId);
     if (result.status === "connected") {
       void refetch();
@@ -65,11 +80,24 @@ export function YourConnectionsScreen() {
     }
   }
 
+  async function handleDisconnectMyAccount(connectionId: string) {
+    setRowError(null);
+    try {
+      await disconnectProvider.mutateAsync(connectionId);
+      void refetch();
+    } catch (disconnectError) {
+      setRowError({
+        connectionId,
+        message: disconnectError instanceof Error ? disconnectError.message : "Failed to disconnect account.",
+      });
+    }
+  }
+
   return (
     <DashboardPageTemplate
       icon={Plug}
       title="Your Connections"
-      badgeLabel="Beta"
+      badgeLabel="Alpha"
       description="Tools your organization has made available to you. Connect your own account where needed — your AI coworker then acts as you, with your permissions."
       colors={["#DBEAFE", "#1E3A8A", "#2563EB", "#93C5FD"]}
     >
@@ -93,9 +121,13 @@ export function YourConnectionsScreen() {
             <YourConnectionRow
               key={connection.id}
               connection={connection}
+              isAdmin={access.isAdmin}
               polling={pollingConnectionId === connection.id}
               connecting={startOAuth.isPending && startOAuth.variables === connection.id}
+              disconnecting={disconnectProvider.isPending && disconnectProvider.variables === connection.id}
+              errorMessage={rowError?.connectionId === connection.id ? rowError.message : null}
               onConnect={() => void handleConnectMyAccount(connection.id)}
+              onDisconnect={() => void handleDisconnectMyAccount(connection.id)}
             />
           ))}
         </div>
@@ -106,17 +138,28 @@ export function YourConnectionsScreen() {
 
 function YourConnectionRow({
   connection,
+  isAdmin,
   polling,
   connecting,
+  disconnecting,
+  errorMessage,
   onConnect,
+  onDisconnect,
 }: {
   connection: ExternalMcpConnection;
+  isAdmin: boolean;
   polling: boolean;
   connecting: boolean;
+  disconnecting: boolean;
+  errorMessage: string | null;
   onConnect: () => void;
+  onDisconnect: () => void;
 }) {
   const isPerMember = connection.credentialMode === "per_member";
+  const needsReconnect = connection.connectedForMe && connection.needsReconnect === true;
   const needsMyConnect = isPerMember && !connection.connectedForMe;
+  const needsAdminConnect = isAdmin && !isPerMember && connection.authType === "oauth" && !connection.connectedForMe;
+  const canDisconnect = canDisconnectNativeProviderAccount(connection);
 
   return (
     <div className="flex items-center justify-between gap-4 px-6 py-4">
@@ -125,10 +168,15 @@ function YourConnectionRow({
         <div className="min-w-0 flex-1">
           <div className="flex flex-wrap items-center gap-2">
             <p className="truncate text-[14px] font-semibold text-gray-900">{connection.name}</p>
-            {connection.connectedForMe ? (
+            {needsReconnect ? (
+              <span className="inline-flex items-center gap-1 rounded-full bg-amber-50 px-2 py-0.5 text-[11px] font-medium text-amber-700">
+                <AlertTriangle className="h-3 w-3" />
+                Reconnect to grant new permissions
+              </span>
+            ) : connection.connectedForMe ? (
               <span className="inline-flex items-center gap-1 rounded-full bg-emerald-50 px-2 py-0.5 text-[11px] font-medium text-emerald-700">
                 <Check className="h-3 w-3" />
-                {isPerMember ? "Connected as you" : "Connected"}
+                {isPerMember ? "Connected as you" : "Org account connected"}
               </span>
             ) : polling ? (
               <span className="inline-flex items-center gap-1 rounded-full bg-amber-50 px-2 py-0.5 text-[11px] font-medium text-amber-700">
@@ -139,20 +187,30 @@ function YourConnectionRow({
               <span className="inline-flex rounded-full bg-amber-50 px-2 py-0.5 text-[11px] font-medium text-amber-700">
                 Connect your account
               </span>
+            ) : needsAdminConnect ? (
+              <span className="inline-flex rounded-full bg-amber-50 px-2 py-0.5 text-[11px] font-medium text-amber-700">
+                Connect the org account
+              </span>
             ) : (
               <span className="inline-flex rounded-full bg-gray-100 px-2 py-0.5 text-[11px] font-medium text-gray-500">
-                Not connected yet
+                Waiting for an admin to connect
               </span>
             )}
           </div>
           <p className="mt-0.5 truncate text-[12px] text-gray-500">{connection.url}</p>
+          {errorMessage ? <p className="mt-1 text-[12px] text-red-600">{errorMessage}</p> : null}
         </div>
       </div>
 
       <div className="flex shrink-0 items-center gap-2">
-        {needsMyConnect ? (
+        {canDisconnect ? (
+          <DenButton variant="destructive" size="sm" loading={disconnecting} onClick={onDisconnect}>
+            Disconnect
+          </DenButton>
+        ) : null}
+        {needsReconnect || needsMyConnect || needsAdminConnect ? (
           <DenButton variant="primary" size="sm" loading={connecting || polling} onClick={onConnect}>
-            Connect
+            {needsReconnect ? "Reconnect" : "Connect"}
           </DenButton>
         ) : null}
       </div>

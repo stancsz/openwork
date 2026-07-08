@@ -19,6 +19,8 @@ export type NativeOAuthProviderConfig = {
   /** Display-only endpoint shown on connection cards. */
   websiteUrl: string
   defaultScopes: string[]
+  defaultFeatures?: string[]
+  optionalFeatures?: Record<string, string[]>
   /** Google (and most modern providers) support PKCE even for confidential clients; harmless to always send. */
   usesPkce: boolean
   /** Extra fixed authorize-url params beyond client_id/redirect_uri/response_type/scope/state/PKCE. */
@@ -34,9 +36,24 @@ export const NATIVE_OAUTH_PROVIDERS: Record<string, NativeOAuthProviderConfig> =
     websiteUrl: "https://workspace.google.com",
     defaultScopes: [
       "openid",
-      "email",
-      "https://www.googleapis.com/auth/gmail.compose",
+      "https://www.googleapis.com/auth/userinfo.email",
+      "https://www.googleapis.com/auth/userinfo.profile",
     ],
+    defaultFeatures: ["calendarRead", "gmailDraft", "driveFile"],
+    optionalFeatures: {
+      calendarRead: ["https://www.googleapis.com/auth/calendar.readonly"],
+      calendarWrite: ["https://www.googleapis.com/auth/calendar.events"],
+      gmailDraft: ["https://www.googleapis.com/auth/gmail.compose"],
+      gmailRead: ["https://www.googleapis.com/auth/gmail.readonly"],
+      driveFile: ["https://www.googleapis.com/auth/drive.file"],
+      driveRead: ["https://www.googleapis.com/auth/drive.readonly"],
+      driveFull: ["https://www.googleapis.com/auth/drive"],
+      chat: [
+        "https://www.googleapis.com/auth/chat.spaces.readonly",
+        "https://www.googleapis.com/auth/chat.messages.readonly",
+        "https://www.googleapis.com/auth/chat.messages.create",
+      ],
+    },
     usesPkce: true,
     extraAuthorizeParams: {
       access_type: "offline",
@@ -47,4 +64,44 @@ export const NATIVE_OAUTH_PROVIDERS: Record<string, NativeOAuthProviderConfig> =
 
 export function getNativeOAuthProvider(providerId: string): NativeOAuthProviderConfig | null {
   return NATIVE_OAUTH_PROVIDERS[providerId] ?? null
+}
+
+export function resolveProviderScopes(provider: NativeOAuthProviderConfig, features: string[]): string[] {
+  const scopes: string[] = []
+  for (const scope of provider.defaultScopes) {
+    if (!scopes.includes(scope)) scopes.push(scope)
+  }
+
+  const optionalFeatures = provider.optionalFeatures
+  if (!optionalFeatures) return scopes
+
+  for (const feature of features) {
+    const featureScopes = optionalFeatures[feature]
+    if (!featureScopes) continue
+    for (const scope of featureScopes) {
+      if (!scopes.includes(scope)) scopes.push(scope)
+    }
+  }
+
+  return scopes
+}
+
+function providerDefaultFeatures(provider: NativeOAuthProviderConfig): string[] {
+  const optionalFeatures = provider.optionalFeatures
+  if (!optionalFeatures) return []
+  return (provider.defaultFeatures ?? []).filter((feature) => Object.hasOwn(optionalFeatures, feature))
+}
+
+export function clientSelectedFeatures(provider: NativeOAuthProviderConfig, extra: Record<string, unknown> | null): string[] {
+  const optionalFeatures = provider.optionalFeatures
+  if (!optionalFeatures) return []
+  if (!extra || !Object.hasOwn(extra, "features") || !Array.isArray(extra.features)) return providerDefaultFeatures(provider)
+
+  const features: string[] = []
+  for (const feature of extra.features) {
+    if (typeof feature !== "string") continue
+    if (!Object.hasOwn(optionalFeatures, feature)) continue
+    if (!features.includes(feature)) features.push(feature)
+  }
+  return features
 }

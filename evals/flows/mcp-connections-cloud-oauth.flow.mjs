@@ -40,30 +40,13 @@
  *   accommodation, not a product behavior change).
  */
 
-const DEN_API_URL = (process.env.OPENWORK_EVAL_DEN_API_URL ?? "").trim().replace(/\/+$/, "");
-const DEN_WEB_URL = (process.env.OPENWORK_EVAL_DEN_WEB_URL ?? "").trim().replace(/\/+$/, "");
+import { denApiFetch, denWebUrl, mcpAgentCall, mintMcpToken, openAdminConnections, signInApi, signInViaBrowser } from "./lib/den-web.mjs";
+
 const DEMO_EMAIL = process.env.OPENWORK_EVAL_DEMO_EMAIL?.trim() || "alex@acme.test";
 const DEMO_PASSWORD = process.env.OPENWORK_EVAL_DEMO_PASSWORD?.trim() || "OpenWorkDemo123!";
 const MOCK_SERVER_URL = (process.env.MOCK_OAUTH_MCP_URL ?? "http://127.0.0.1:3978").trim().replace(/\/+$/, "");
 const CONNECTION_NAME = `fraimz-mcp-${Date.now()}`;
 const ECHO_TEXT = "search and execute in the cloud proof";
-
-async function denApiFetch(path, options = {}) {
-  const response = await fetch(`${DEN_API_URL}${path}`, {
-    ...options,
-    // Better Auth rejects auth requests with no Origin header (CSRF
-    // protection); a real browser always sends one, Node's fetch doesn't.
-    headers: { "content-type": "application/json", origin: DEN_WEB_URL, ...(options.headers ?? {}) },
-  });
-  const text = await response.text();
-  let body;
-  try {
-    body = JSON.parse(text);
-  } catch {
-    body = text;
-  }
-  return { response, body };
-}
 
 export default {
   id: "mcp-connections-cloud-oauth",
@@ -77,9 +60,25 @@ export default {
       run: async (ctx) => {
         const health = await fetch(`${MOCK_SERVER_URL}/health`).catch(() => null);
         ctx.assert(Boolean(health?.ok), `Mock OAuth+MCP server not reachable at ${MOCK_SERVER_URL}.`);
+        const adminSession = await signInApi(DEMO_EMAIL, DEMO_PASSWORD);
+        ctx.assert(Boolean(adminSession), `Den API sign-in failed for ${DEMO_EMAIL}.`);
+        const existing = await denApiFetch("/v1/mcp-connections?scope=manageable", {
+          headers: { authorization: `Bearer ${adminSession}` },
+        });
+        ctx.assert(existing.response.ok, `Listing manageable connections failed: ${existing.response.status}`);
+        for (const connection of existing.body.connections ?? []) {
+          if (connection.name.startsWith("fraimz-mcp-")) {
+            const removed = await denApiFetch(`/v1/mcp-connections/${connection.id}`, {
+              method: "DELETE",
+              headers: { authorization: `Bearer ${adminSession}` },
+            });
+            ctx.assert(removed.response.ok, `Cleanup delete failed for leftover ${connection.id}.`);
+          }
+        }
+        const webUrl = denWebUrl();
         const currentUrl = await ctx.eval("window.location.href");
-        if (!currentUrl.includes(new URL(DEN_WEB_URL).host)) {
-          await ctx.eval(`(() => { window.location.href = ${JSON.stringify(DEN_WEB_URL)}; return true; })()`);
+        if (!currentUrl.includes(new URL(webUrl).host)) {
+          await ctx.eval(`(() => { window.location.href = ${JSON.stringify(webUrl)}; return true; })()`);
         }
         await ctx.waitFor("document.readyState === 'complete'", { timeoutMs: 30_000, label: "den-web page loaded" });
       },
@@ -97,51 +96,23 @@ export default {
           ctx.log("Already signed in as an admin; reusing session.");
           return;
         }
-        await ctx.eval(`fetch('/api/auth/sign-out', { method: 'POST', headers: { 'content-type': 'application/json' }, body: '{}' }).then(() => true).catch(() => true)`, { awaitPromise: true });
-        await ctx.eval(`(() => { window.location.href = ${JSON.stringify(DEN_WEB_URL)}; return true; })()`);
-        await ctx.waitFor("document.readyState === 'complete'", { timeoutMs: 30_000 });
-        await ctx.clickText("Sign in", { timeoutMs: 20_000 });
-        await ctx.fill("input[type=\"email\"], input", DEMO_EMAIL);
-        await ctx.clickText("Next", { timeoutMs: 15_000 });
-        await ctx.waitFor("Boolean(document.querySelector('input[type=\"password\"]'))", {
-          timeoutMs: 15_000,
-          label: "password field",
-        });
-        await ctx.fill("input[type=\"password\"]", DEMO_PASSWORD);
-        await ctx.clickText("Sign in", { timeoutMs: 15_000 });
-        await ctx.waitForText("Dashboard", { timeoutMs: 30_000 });
+        await signInViaBrowser(ctx, DEMO_EMAIL, DEMO_PASSWORD);
       },
     },
     {
       name: "Open Settings -> MCP Connections",
       run: async (ctx) => {
-        // Retry the click: on a fresh page load (especially over higher cloud
-        // latency), the very first click can land before Next.js has finished
-        // hydrating and attaching the link's handler.
-        await ctx.waitFor(
-          `(() => {
-            const link = [...document.querySelectorAll('a')].find((a) => a.getAttribute('href')?.includes('mcp-connections'));
-            if (!link) return false;
-            if (window.location.pathname.includes('mcp-connections')) return true;
-            link.click();
-            return false;
-          })()`,
-          { timeoutMs: 30_000, label: "MCP Connections nav link clicked" },
-        );
-        await ctx.waitFor("window.location.pathname.includes('mcp-connections')", {
-          timeoutMs: 20_000,
-          label: "MCP Connections route",
-        });
-        await ctx.prove("The new MCP Connections screen renders in Den", {
+        await openAdminConnections(ctx);
+        await ctx.prove("The Connections screen renders in Den", {
           assert: async () => {
-            await ctx.expectText("MCP Connections");
+            await ctx.expectText("Add a custom MCP server");
             await ctx.expectText("Add Custom");
             await ctx.expectText("Notion");
           },
           screenshot: {
             name: "mcp-connections-screen",
-            claim: "Den has a real MCP Connections settings screen with quick-add presets and a custom-URL form.",
-            requireText: ["MCP Connections", "Add Custom", "Notion"],
+            claim: "Den has a real Connections settings screen with quick-add presets and a custom-URL form.",
+            requireText: ["Add a custom MCP server", "Add Custom", "Notion"],
             rejectText: ["Something went wrong"],
           },
         });
@@ -159,6 +130,16 @@ export default {
             );
             await ctx.fill('input[placeholder="notion"]', CONNECTION_NAME);
             await ctx.fill('input[placeholder="https://mcp.example.com/mcp"]', `${MOCK_SERVER_URL}/mcp`);
+            await ctx.waitFor(
+              "[...document.querySelectorAll('button')].some((button) => button.textContent.trim() === 'One org account')",
+              { timeoutMs: 10_000, label: "One org account button" },
+            );
+            const clicked = await ctx.eval(`(() => {
+              const button = [...document.querySelectorAll('button')].find((entry) => entry.textContent.trim() === 'One org account');
+              button?.click();
+              return Boolean(button);
+            })()`);
+            ctx.assert(clicked, "One org account button was not found.");
           },
           assert: async () => {
             const values = await ctx.eval(`(() => ({
@@ -240,51 +221,23 @@ export default {
       run: async (ctx) => {
         await ctx.prove("The org's harness-facing MCP surface (search_capabilities + execute_capability) picks up the connection with zero desktop-side setup", {
           assert: async () => {
-            const signIn = await denApiFetch("/api/auth/sign-in/email", {
-              method: "POST",
-              body: JSON.stringify({ email: DEMO_EMAIL, password: DEMO_PASSWORD }),
-            });
-            ctx.assert(signIn.response.ok, `Den API sign-in failed: ${signIn.response.status}`);
-            const sessionToken = signIn.body.token;
+            const sessionToken = await signInApi(DEMO_EMAIL, DEMO_PASSWORD);
+            ctx.assert(Boolean(sessionToken), `Den API sign-in failed for ${DEMO_EMAIL}.`);
+            const mcpToken = await mintMcpToken(sessionToken, ctx);
 
-            const mint = await denApiFetch("/v1/mcp/token", {
-              method: "POST",
-              headers: { authorization: `Bearer ${sessionToken}` },
-              body: "{}",
-            });
-            ctx.assert(mint.response.ok, `Minting an MCP token failed: ${mint.response.status}`);
-            const mcpToken = mint.body.token;
-
-            async function mcpAgentCall(method, params) {
-              const response = await fetch(`${DEN_API_URL}/mcp/agent`, {
-                method: "POST",
-                headers: {
-                  "content-type": "application/json",
-                  accept: "application/json, text/event-stream",
-                  authorization: `Bearer ${mcpToken}`,
-                },
-                body: JSON.stringify({ jsonrpc: "2.0", id: Date.now(), method, params }),
-              });
-              const raw = await response.text();
-              ctx.assert(response.ok, `MCP ${method} failed: ${response.status} ${raw.slice(0, 200)}`);
-              const dataLine = raw.split("\n").find((line) => line.startsWith("data:"));
-              ctx.assert(Boolean(dataLine), `MCP ${method} returned no data frame.`);
-              return JSON.parse(dataLine.slice(5)).result;
-            }
-
-            const searchResult = await mcpAgentCall("tools/call", {
+            const searchResult = await mcpAgentCall(mcpToken, "tools/call", {
               name: "search_capabilities",
               arguments: { query: "echo" },
-            });
+            }, ctx);
             const matchesText = searchResult.content[0].text;
             ctx.assert(matchesText.includes(CONNECTION_NAME), `search_capabilities didn't surface ${CONNECTION_NAME}: ${matchesText}`);
             const match = JSON.parse(matchesText).matches.find((entry) => entry.summary.includes(CONNECTION_NAME));
             ctx.assert(Boolean(match), `No search_capabilities match for ${CONNECTION_NAME}.`);
 
-            const executeResult = await mcpAgentCall("tools/call", {
+            const executeResult = await mcpAgentCall(mcpToken, "tools/call", {
               name: "execute_capability",
               arguments: { name: match.name, body: { text: ECHO_TEXT } },
-            });
+            }, ctx);
             const echoed = executeResult.content?.[0]?.text;
             ctx.assert(echoed === ECHO_TEXT, `execute_capability didn't echo back the exact text: got "${echoed}"`);
           },

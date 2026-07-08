@@ -27,6 +27,7 @@ import { EnvService } from "./env-file.js";
 import {
   normalizeResourceSnapshot,
   readDesktopCloudSyncState,
+  readWorkspaceCloudImports,
   syncDesktopCloudResources,
 } from "./desktop-cloud-sync.js";
 import { installCloudPlugin, readCloudPluginResolved, readInstalledCloudPlugins, removeCloudPlugin } from "./cloud-plugins.js";
@@ -1383,9 +1384,19 @@ function createRoutes(
 
     const result = await enqueueDesktopCloudSync(async () => {
       const openwork = await readOpenworkConfigForWorkspace(config, workspace);
-      const cloudImports = await readInstalledCloudPlugins(config, workspace.id);
+      const installed = await readInstalledCloudPlugins(config, workspace.id);
+      const cloudImports = {
+        ...installed,
+        providers: readWorkspaceCloudImports(openwork).providers,
+      };
       const next = syncDesktopCloudResources({ openwork: { ...openwork, cloudImports }, snapshot });
-      await writeOpenworkWorkspaceConfig(config, workspace.id, () => next.openwork);
+      // The plugin DB owns plugins/marketplaces, but provider import baselines live in
+      // the workspace config. Writing the merged cloudImports back erased providers
+      // and drove the provider-sync dispose/create loop.
+      await writeOpenworkWorkspaceConfig(config, workspace.id, (current) => ({
+        ...current,
+        desktopCloudSync: next.state,
+      }));
       await recordAudit(workspace.path, {
         id: shortId(),
         workspaceId: workspace.id,
@@ -1426,7 +1437,7 @@ function createRoutes(
       paths: [openworkConfigPath(workspace.path), join(workspace.path, ".opencode")],
     });
 
-    const imported = await installCloudPlugin({
+    const result = await installCloudPlugin({
       serverConfig: config,
       workspaceId: workspace.id,
       workspaceRoot: workspace.path,
@@ -1440,6 +1451,7 @@ function createRoutes(
         : null,
       resolved,
     });
+    const imported = result.item;
 
     await recordAudit(workspace.path, {
       id: shortId(),
@@ -1459,7 +1471,10 @@ function createRoutes(
       });
     }
 
-    return jsonResponse({ item: imported });
+    // Hot-register any bundled MCP servers with the running engine.
+    await syncRuntimeMcpToOpencodeEngine(config, workspace).catch(() => undefined);
+
+    return jsonResponse({ item: imported, warnings: result.warnings });
   });
 
   // Claude Code plugin bundles (MCP + skills + commands + agents) installed
@@ -1488,13 +1503,14 @@ function createRoutes(
       paths: [openworkConfigPath(workspace.path), join(workspace.path, ".opencode")],
     });
 
-    const imported = await installCloudPlugin({
+    const result = await installCloudPlugin({
       serverConfig: config,
       workspaceId: workspace.id,
       workspaceRoot: workspace.path,
       marketplaceId: null,
       resolved: bundle.resolved,
     });
+    const imported = result.item;
 
     await recordAudit(workspace.path, {
       id: shortId(),
@@ -1517,7 +1533,7 @@ function createRoutes(
     // Hot-register any bundled MCP servers with the running engine.
     await syncRuntimeMcpToOpencodeEngine(config, workspace).catch(() => undefined);
 
-    return jsonResponse({ item: imported, preview: bundle.preview });
+    return jsonResponse({ item: imported, preview: bundle.preview, warnings: result.warnings });
   });
 
   addRoute(routes, "DELETE", "/workspace/:id/cloud-plugins/:pluginId", "client", async (ctx) => {
@@ -1558,7 +1574,7 @@ function createRoutes(
       });
     }
 
-    return jsonResponse({ item: removed });
+    return jsonResponse({ item: removed, warnings: [] });
   });
 
   addRoute(routes, "GET", "/workspace/:id/authorized-folders", "client", async (ctx) => {
@@ -1815,6 +1831,7 @@ function createRoutes(
     const body = await readJsonBody(ctx.request);
     const opencode = body.opencode as Record<string, unknown> | undefined;
     const openwork = body.openwork as Record<string, unknown> | undefined;
+    let runtimeChanged = false;
 
     if (!opencode && !openwork) {
       throw new ApiError(400, "invalid_payload", "opencode or openwork updates required");
@@ -1864,10 +1881,11 @@ function createRoutes(
       }
 
       if (Object.keys(logicalUpdates).length || Object.prototype.hasOwnProperty.call(logicalUpdates, "permission")) {
-        await writeRuntimeOpencodeConfig(config, workspace.id, (current) => ({
+        const result = await writeRuntimeOpencodeConfig(config, workspace.id, (current) => ({
           ...current,
           ...logicalUpdates,
         }));
+        runtimeChanged = result.changed;
       }
     }
     if (openwork) {
@@ -1887,7 +1905,9 @@ function createRoutes(
       timestamp: Date.now(),
     });
 
-    if (opencode) {
+    // A no-op provider patch (for example cloud sync reconciling an identical
+    // block) must not force an engine reload; that caused a dispose/create loop.
+    if (opencode && runtimeChanged) {
       emitReloadEvent(ctx.reloadEvents, workspace, "config", buildConfigTrigger(openworkConfigPath(workspace.path)));
     }
 

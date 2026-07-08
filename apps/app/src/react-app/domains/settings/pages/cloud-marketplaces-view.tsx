@@ -10,10 +10,15 @@ import type { DenExternalMcpConnection, DenOrgMarketplaceResolved, DenOrgPlugin,
 import { Button } from "@/components/ui/button";
 import { Separator } from "@/components/ui/separator";
 import { t } from "@/i18n";
+import { useConnectEnabled } from "@/react-app/domains/cloud/desktop-config-provider";
+import { canDisconnectNativeProviderAccount } from "@/react-app/domains/connections/native-provider-connections";
 import { ExtensionCard } from "@/react-app/design-system/extension-card";
 import { ExtensionDetailModal } from "@/react-app/design-system/extension-detail-modal";
+import { resolveMarketplaceDeliveryAction } from "@/react-app/domains/settings/connect-delivery";
+import { isDesktopInstallableMarketplacePlugin } from "@/react-app/domains/settings/connect-cloud-readiness";
 import {
   isOrgMcpConnectionItem,
+  isOrgMcpConnectionReady,
   isToggleControlledExtension,
   orgMcpConnectionActionLabel,
   type ExtensionItem,
@@ -42,7 +47,7 @@ import {
   type OpenMarketplacePluginDetail,
 } from "@/react-app/shell/notifications";
 
-type AsyncResult = { ok: boolean; message: string };
+type AsyncResult = { ok: boolean; message: string; warnings?: string[] };
 type MarketplacePackageStatus = "available" | "installed" | "update_available";
 type MarketplaceStatusFilter = "all" | MarketplacePackageStatus;
 type CloudMarketplacesSession = Pick<
@@ -111,7 +116,9 @@ export type CloudMarketplacesViewProps = {
   isBuiltInConnected?: (entry: McpDirectoryInfo) => boolean;
   extensionItems?: ExtensionItem[];
   orgMcpConnectingId?: string | null;
+  orgMcpDisconnectingId?: string | null;
   onConnectOrgMcp?: (connectionId: string) => void;
+  onDisconnectOrgMcp?: (connectionId: string) => void;
   refreshOrgMcpConnections?: () => Promise<unknown> | void;
   setBuiltInEnabled?: (entry: McpDirectoryInfo, enabled: boolean) => void;
 };
@@ -198,11 +205,14 @@ export function CloudMarketplacesView({
   isBuiltInConnected,
   extensionItems = [],
   orgMcpConnectingId = null,
+  orgMcpDisconnectingId = null,
   onConnectOrgMcp,
+  onDisconnectOrgMcp,
   refreshOrgMcpConnections,
   setBuiltInEnabled,
 }: CloudMarketplacesViewProps) {
   const { activeOrganization: activeOrg, authToken, client, isSignedIn, user } = useCloudSession();
+  const connectEnabled = useConnectEnabled();
   const [busy, setBusy] = React.useState(false);
   const [actionId, setActionId] = React.useState<string | null>(null);
   const [actionError, setActionError] = React.useState<string | null>(null);
@@ -247,7 +257,8 @@ export function CloudMarketplacesView({
   ), [extensionItems]);
   const lastRowsRef = React.useRef<MarketplaceRow[]>([]);
   const cloudRows = React.useMemo<MarketplacePackageRow[]>(() => {
-    return marketplaces.flatMap((marketplace) => marketplace.plugins.map((plugin) => {
+    return marketplaces.flatMap((marketplace) => marketplace.plugins.flatMap((plugin) => {
+      if (connectEnabled === true && !isDesktopInstallableMarketplacePlugin(plugin)) return [];
       const imported = importedPlugins[plugin.id] ?? null;
       const composition = pluginComposition(plugin);
       const counts = pluginCounts(plugin);
@@ -255,7 +266,7 @@ export function CloudMarketplacesView({
       const status: MarketplacePackageStatus = imported && pendingChanges[plugin.id] === "modified" && !isCloudBuiltInPlugin(plugin)
         ? "update_available"
         : item?.installState ?? (isCloudBuiltInPlugin(plugin) ? "installed" : pluginStatus(imported, plugin));
-      return {
+      return [{
         source: "cloud",
         marketplaceId: marketplace.marketplace.id,
         marketplaceName: marketplace.marketplace.name,
@@ -272,9 +283,9 @@ export function CloudMarketplacesView({
           ...counts,
           ...(imported?.files.map((file) => `${file.title} ${file.objectType} ${file.path}`) ?? []),
         ].join(" ").toLowerCase(),
-      };
+      }];
     }));
-  }, [extensionItemsByPluginId, importedPlugins, marketplaces, pendingChanges]);
+  }, [connectEnabled, extensionItemsByPluginId, importedPlugins, marketplaces, pendingChanges]);
 
   const builtInRows = React.useMemo<BuiltInMarketplaceRow[]>(() => {
     return builtInEntries.map((entry) => {
@@ -301,6 +312,7 @@ export function CloudMarketplacesView({
   }, [builtInEntries, enablementContext, extensionItemsByBuiltInId, isBuiltInConnected]);
 
   const orgMcpRows = React.useMemo<OrgMcpMarketplaceRow[]>(() => {
+    if (connectEnabled === true) return [];
     return extensionItems.flatMap((item) => {
       if (!isOrgMcpConnectionItem(item) || item.installState !== "available") return [];
       const connection = item.orgMcpConnection;
@@ -320,7 +332,7 @@ export function CloudMarketplacesView({
         ].join(" ").toLowerCase(),
       }];
     });
-  }, [extensionItems]);
+  }, [connectEnabled, extensionItems]);
 
   const rows = React.useMemo<MarketplaceRow[]>(() => canShowRows ? [...builtInRows, ...cloudRows, ...orgMcpRows] : [], [builtInRows, canShowRows, cloudRows, orgMcpRows]);
 
@@ -427,6 +439,7 @@ export function CloudMarketplacesView({
 
   const importPlugin = React.useCallback(
     async (marketplaceId: string | null, plugin: DenOrgPlugin) => {
+      if (connectEnabled === true && !isDesktopInstallableMarketplacePlugin(plugin)) return;
       if (actionId) return;
 
       setActionId(plugin.id);
@@ -435,7 +448,8 @@ export function CloudMarketplacesView({
       try {
         const result = await extensions.importCloudOrgPlugin(marketplaceId, plugin);
         if (!result.ok) throw new Error(result.message);
-        toast.success(result.message);
+        if (result.warnings?.length) toast.warning(result.message);
+        else toast.success(result.message);
         setDetailRow(null);
       } catch (error) {
         setActionError(error instanceof Error ? error.message : `Failed to add ${plugin.name}.`);
@@ -443,7 +457,7 @@ export function CloudMarketplacesView({
         setActionId(null);
       }
     },
-    [actionId, extensions],
+    [actionId, connectEnabled, extensions],
   );
 
   const removePlugin = React.useCallback(
@@ -483,16 +497,20 @@ export function CloudMarketplacesView({
     setActionError(null);
     const targets = [...updatableRows];
     let failed = 0;
+    const warnings: string[] = [];
     // Sequential on purpose: avoid hammering the install routes.
     for (let index = 0; index < targets.length; index += 1) {
       const target = targets[index];
       setUpdateAllProgress({ current: index + 1, total: targets.length });
       const result = await extensions.importCloudOrgPlugin(target.marketplaceId, target.plugin);
       if (!result.ok) failed += 1;
+      else warnings.push(...(result.warnings ?? []));
     }
     setUpdateAllProgress(null);
     if (failed > 0) {
       setActionError(`Failed to update ${failed} extension${failed === 1 ? "" : "s"}.`);
+    } else if (warnings.length > 0) {
+      toast.warning(`Updated ${targets.length} extension${targets.length === 1 ? "" : "s"}. ${warnings.join(" ")}`);
     } else if (targets.length > 0) {
       toast.success(`Updated ${targets.length} extension${targets.length === 1 ? "" : "s"}.`);
     }
@@ -502,9 +520,9 @@ export function CloudMarketplacesView({
     <SettingsSection>
       <SettingsSectionHeader>
         <SettingsSectionHeaderContent>
-          <SettingsSectionHeaderTitle>Extension Marketplace</SettingsSectionHeaderTitle>
+          <SettingsSectionHeaderTitle>{connectEnabled === true ? t("extensions.marketplace_local_title") : t("extensions.marketplace_title")}</SettingsSectionHeaderTitle>
           <SettingsSectionHeaderDescription>
-            Browse built-in OpenWork extensions and organization marketplace extensions. Claude-compatible plugins are normalized into OpenWork extensions with installable resources such as skills, MCPs, commands, or tools.
+            {connectEnabled === true ? t("extensions.marketplace_local_description") : t("extensions.marketplace_description")}
           </SettingsSectionHeaderDescription>
         </SettingsSectionHeaderContent>
         <SettingsSectionHeaderActions>
@@ -627,7 +645,10 @@ export function CloudMarketplacesView({
                 row={row}
                 onOpenDetail={setDetailRow}
                 onUpdatePlugin={importPlugin}
+                connectEnabled={connectEnabled}
                 orgMcpConnectingId={orgMcpConnectingId}
+                orgMcpDisconnectingId={orgMcpDisconnectingId}
+                onDisconnectOrgMcp={onDisconnectOrgMcp}
                 builtInDisabled={builtInExtensionsDisabled}
                 builtInConnectingName={builtInConnectingName}
                 highlighted={isHighlighted}
@@ -646,6 +667,7 @@ export function CloudMarketplacesView({
           resolveError={detailError}
           onClose={() => setDetailRow(null)}
           onImportPlugin={importPlugin}
+          connectEnabled={connectEnabled}
           onRemovePlugin={removePlugin}
         />
       ) : detailRow?.source === "built-in" ? (
@@ -661,8 +683,10 @@ export function CloudMarketplacesView({
         <OrgMcpConnectionDetailModal
           row={detailRow}
           connecting={orgMcpConnectingId === detailRow.connection.id}
+          disconnecting={orgMcpDisconnectingId === detailRow.connection.id}
           onClose={() => setDetailRow(null)}
           onConnect={onConnectOrgMcp}
+          onDisconnect={onDisconnectOrgMcp}
         />
       ) : null}
     </SettingsSection>
@@ -692,7 +716,10 @@ function MarketplaceCard(props: {
   row: MarketplaceRow;
   onOpenDetail: (row: MarketplaceRow) => void;
   onUpdatePlugin: (marketplaceId: string | null, plugin: DenOrgPlugin) => void | Promise<void>;
+  connectEnabled?: boolean;
   orgMcpConnectingId: string | null;
+  orgMcpDisconnectingId: string | null;
+  onDisconnectOrgMcp?: (connectionId: string) => void;
   builtInDisabled: boolean;
   builtInConnectingName: string | null;
   highlighted?: boolean;
@@ -737,19 +764,34 @@ function MarketplaceCard(props: {
 
   if (row.source === "org-mcp") {
     const actionBusy = props.orgMcpConnectingId === row.connection.id;
+    const disconnecting = props.orgMcpDisconnectingId === row.connection.id;
+    const canDisconnect = canDisconnectNativeProviderAccount(row.connection);
+    const ready = isOrgMcpConnectionReady(row.connection);
     return (
-      <div ref={highlightRef} className={highlightClass}>
+      <div ref={highlightRef} className={`space-y-2 ${highlightClass}`}>
         <ExtensionCard
           name={row.item.name}
           description={row.item.description ?? "Available from your organization."}
           kind="mcp"
           url={row.connection.url}
-          connected={false}
+          connected={ready}
+          connectedLabel={orgMcpConnectionActionLabel(row.connection)}
           beta
           connecting={actionBusy}
-          actionLabel={actionBusy ? "Waiting for browser..." : orgMcpConnectionActionLabel(row.connection)}
+          actionLabel={actionBusy ? "Waiting for browser..." : disconnecting ? t("mcp.org_connection_disconnecting_action") : ready ? "View details" : orgMcpConnectionActionLabel(row.connection)}
           onClick={() => onOpenDetail(row)}
         />
+        {canDisconnect ? (
+          <Button
+            size="sm"
+            variant="destructive"
+            className="w-full"
+            disabled={disconnecting}
+            onClick={() => props.onDisconnectOrgMcp?.(row.connection.id)}
+          >
+            {disconnecting ? t("mcp.org_connection_disconnecting_action") : t("mcp.org_connection_disconnect_action")}
+          </Button>
+        ) : null}
       </div>
     );
   }
@@ -758,6 +800,11 @@ function MarketplaceCard(props: {
   const manifest = row.plugin.extension?.manifest;
   const cloudBuiltIn = isCloudBuiltInPlugin(row.plugin);
   const updateAvailable = !cloudBuiltIn && row.status === "update_available";
+  const deliveryAction = resolveMarketplaceDeliveryAction({
+    connectEnabled: props.connectEnabled === true && !isDesktopInstallableMarketplacePlugin(row.plugin),
+    importedLocally: Boolean(row.imported),
+  });
+  const cloudDelivery = deliveryAction !== "install";
 
   return (
     <div ref={highlightRef} className={`flex flex-col gap-2 ${highlightClass}`}>
@@ -767,13 +814,13 @@ function MarketplaceCard(props: {
         iconSlug={manifest?.icon?.simpleIconSlug}
         iconSrc={manifest?.icon?.src}
         kind="extension"
-        connected={cloudBuiltIn || Boolean(row.imported)}
-        connectedLabel={cloudBuiltIn ? "Built-in" : updateAvailable ? t("extensions.update_available") : "Installed"}
+        connected={cloudBuiltIn || cloudDelivery || Boolean(row.imported)}
+        connectedLabel={cloudDelivery ? t("extensions.marketplace_active_cloud_label") : cloudBuiltIn ? "Built-in" : updateAvailable ? t("extensions.update_available") : "Installed"}
         connecting={actionBusy}
-        actionLabel={cloudBuiltIn ? "View details" : actionBusy ? "Working..." : actionLabelForStatus(row.status)}
+        actionLabel={cloudDelivery ? t("extensions.marketplace_runs_in_cloud") : cloudBuiltIn ? "View details" : actionBusy ? "Working..." : actionLabelForStatus(row.status)}
         onClick={() => onOpenDetail(row)}
       />
-      {updateAvailable ? (
+      {updateAvailable && !cloudDelivery ? (
         <Button
           size="xs"
           variant="secondary"
@@ -831,10 +878,14 @@ function BuiltInMarketplaceDetailModal(props: {
 function OrgMcpConnectionDetailModal(props: {
   row: OrgMcpMarketplaceRow;
   connecting: boolean;
+  disconnecting: boolean;
   onClose: () => void;
   onConnect?: (connectionId: string) => void;
+  onDisconnect?: (connectionId: string) => void;
 }) {
-  const { row, connecting, onClose, onConnect } = props;
+  const { row, connecting, onClose, onConnect, onDisconnect } = props;
+  const ready = isOrgMcpConnectionReady(row.connection);
+  const canDisconnect = canDisconnectNativeProviderAccount(row.connection);
   return (
     <ExtensionDetailModal
       open
@@ -842,20 +893,23 @@ function OrgMcpConnectionDetailModal(props: {
       name={row.item.name}
       description={row.item.description ?? "Available from your organization."}
       kind="mcp"
-      connected={false}
+      connected={ready}
+      connectedLabel={orgMcpConnectionActionLabel(row.connection)}
       beta
-      connecting={connecting}
+      connecting={connecting || props.disconnecting}
       connectLabel={orgMcpConnectionActionLabel(row.connection)}
       connectingLabel="Waiting for browser..."
+      uninstallLabel={t("mcp.org_connection_disconnect_action")}
       url={row.connection.url}
       oauth={row.connection.authType === "oauth"}
       showEnablementCard={false}
-      onConnect={onConnect ? () => onConnect(row.connection.id) : undefined}
+      onConnect={!ready && onConnect ? () => onConnect(row.connection.id) : undefined}
+      onUninstall={canDisconnect && onDisconnect ? () => onDisconnect(row.connection.id) : undefined}
       configSlot={(
         <div className="space-y-4">
           <div className="flex flex-wrap gap-2">
             <SettingsPill>Shared by your organization</SettingsPill>
-            <SettingsPill>{row.connection.credentialMode === "shared" ? "Shared credential" : "Your account"}</SettingsPill>
+            <SettingsPill>{row.connection.credentialMode === "shared" ? "Org account" : "Your account"}</SettingsPill>
             <SettingsPill>MCP</SettingsPill>
           </div>
           <SettingsNotice>
@@ -873,6 +927,7 @@ function MarketplacePackageDetailModal(props: {
   resolved: DenOrgPluginResolved | null;
   resolving: boolean;
   resolveError: string | null;
+  connectEnabled?: boolean;
   onClose: () => void;
   onImportPlugin: (marketplaceId: string | null, plugin: DenOrgPlugin) => void | Promise<void>;
   onRemovePlugin: (pluginId: string, pluginName: string) => void | Promise<void>;
@@ -881,7 +936,12 @@ function MarketplacePackageDetailModal(props: {
   const actionBusy = actionId === row.plugin.id;
   const cloudBuiltIn = isCloudBuiltInPlugin(row.plugin);
   const manifest = row.plugin.extension?.manifest;
-  const canAddOrUpdate = !cloudBuiltIn && (row.status === "available" || row.status === "update_available");
+  const deliveryAction = resolveMarketplaceDeliveryAction({
+    connectEnabled: props.connectEnabled === true && !isDesktopInstallableMarketplacePlugin(row.plugin),
+    importedLocally: Boolean(row.imported),
+  });
+  const cloudDelivery = deliveryAction !== "install";
+  const canAddOrUpdate = !cloudDelivery && !cloudBuiltIn && (row.status === "available" || row.status === "update_available");
 
   return (
     <ExtensionDetailModal
@@ -892,8 +952,8 @@ function MarketplacePackageDetailModal(props: {
       iconSlug={manifest?.icon?.simpleIconSlug}
       iconSrc={manifest?.icon?.src}
       kind="extension"
-      connected={cloudBuiltIn || Boolean(row.imported)}
-      connectedLabel={cloudBuiltIn ? "Built-in" : "Installed"}
+      connected={cloudBuiltIn || cloudDelivery || Boolean(row.imported)}
+      connectedLabel={cloudDelivery ? t("extensions.marketplace_active_cloud_label") : cloudBuiltIn ? "Built-in" : "Installed"}
       connecting={actionBusy}
       connectLabel={row.status === "update_available" ? "Update" : "Add"}
       connectingLabel={row.status === "update_available" ? "Updating..." : "Adding..."}
@@ -907,7 +967,9 @@ function MarketplacePackageDetailModal(props: {
       configSlot={(
         <div className="space-y-4">
           <div className="flex flex-wrap gap-2">
-            <SettingsPill className={statusClass(row.status)}>{cloudBuiltIn ? "Built-in" : statusLabel(row.status)}</SettingsPill>
+            <SettingsPill className={cloudDelivery ? "border-green-7/30 bg-green-3/20 text-green-11" : statusClass(row.status)}>
+              {cloudDelivery ? t("extensions.marketplace_active_cloud_label") : cloudBuiltIn ? "Built-in" : statusLabel(row.status)}
+            </SettingsPill>
             <SettingsPill>{row.marketplaceName}</SettingsPill>
             {row.counts.map((label) => <SettingsPill key={label}>{label}</SettingsPill>)}
           </div>

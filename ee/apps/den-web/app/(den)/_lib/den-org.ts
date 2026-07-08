@@ -188,6 +188,7 @@ export type DenOrgContext = {
   currentMemberTeams: DenCurrentMemberTeam[];
   entitlements: DenOrgEntitlements;
   authMethods: DenOrgAuthMethods;
+  capabilities: DenOrgCapabilities;
 };
 
 export type DenOrgAuthMethods = {
@@ -200,6 +201,12 @@ export type DenOrgEntitlements = {
   desktopPolicies: boolean;
   orgControls: boolean;
   analytics: boolean;
+};
+
+/** Per-org feature flags controlled by platform admins; everything defaults to off. */
+export type DenOrgCapabilities = {
+  installLinks: boolean;
+  mcpConnections: boolean;
 };
 
 export type DenOrganizationMetadata = {
@@ -220,6 +227,7 @@ export const DEN_ROLE_PERMISSION_OPTIONS = {
 
 export const PENDING_ORG_INVITATION_STORAGE_KEY = "openwork:web:pending-org-invitation";
 export const PENDING_WORKSPACE_CLAIM_STORAGE_KEY = "openwork:web:pending-workspace-claim";
+export const PENDING_ORG_SELECTION_STORAGE_KEY = "openwork:web:pending-org-selection";
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null;
@@ -330,6 +338,14 @@ export function getOrgAccessFlags(roleValue: string, isOwner: boolean, roleDefin
     canManageScim: canManageSecurityConfiguration,
     canManageSso: canManageSecurityConfiguration,
   };
+}
+
+export function shouldRequireOrgSelection(orgs: readonly DenOrgSummary[]): boolean {
+  return orgs.length > 1 && !orgs.some((org) => org.isActive);
+}
+
+export function shouldOfferOrgSelection(orgs: readonly DenOrgSummary[]): boolean {
+  return orgs.length > 1;
 }
 
 export function formatRoleLabel(role: string): string {
@@ -714,6 +730,7 @@ export function parseOrgContextPayload(payload: unknown): DenOrgContext | null {
     currentMemberTeams,
     entitlements: parseOrgEntitlements(payload.entitlements),
     authMethods: parseOrgAuthMethods(payload.authMethods),
+    capabilities: parseOrgCapabilities(payload.capabilities),
   };
 }
 
@@ -725,6 +742,17 @@ function parseOrgAuthMethods(value: unknown): DenOrgAuthMethods {
   return {
     sso: value.sso === true,
     scim: value.scim === true,
+  };
+}
+
+function parseOrgCapabilities(value: unknown): DenOrgCapabilities {
+  if (!isRecord(value)) {
+    return { installLinks: false, mcpConnections: false };
+  }
+
+  return {
+    installLinks: value.installLinks === true,
+    mcpConnections: value.mcpConnections === true,
   };
 }
 

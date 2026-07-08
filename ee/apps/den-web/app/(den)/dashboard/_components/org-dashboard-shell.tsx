@@ -42,8 +42,10 @@ import {
   getSsoRoute,
   getScimRoute,
 } from "../../_lib/den-org";
+import { useOrgListWindow } from "../../_lib/use-org-list-window";
 import { useOrgDashboard } from "../_providers/org-dashboard-provider";
 import { buildDenFeedbackUrl } from "../../_lib/feedback";
+import { OrgSelectionScreen } from "./org-selection-screen";
 
 const OPENWORK_DOCS_URL = "/docs";
 
@@ -180,16 +182,42 @@ function getDashboardPageTitle(pathname: string, orgSlug: string | null) {
 
 export function OrgDashboardShell({ children }: { children: React.ReactNode }) {
   const pathname = usePathname();
-  const { user, signOut } = useDenFlow();
+  const { user, signOut, runtimeConfig, runtimeConfigLoaded } = useDenFlow();
   const {
     activeOrg,
     orgDirectory,
     orgContext,
+    orgSelectionRequired,
     orgBusy,
     orgError,
+    mutationBusy,
     switchOrganization,
   } = useOrgDashboard();
   const [switcherOpen, setSwitcherOpen] = useState(false);
+  const [sidebarOpen, setSidebarOpen] = useState(false);
+  const isSingleOrgMode = runtimeConfigLoaded && runtimeConfig.orgMode === "single_org";
+  const {
+    query: switcherQuery,
+    setQuery: setSwitcherQuery,
+    visible: visibleOrgDirectory,
+    filteredCount: switcherFilteredCount,
+    hiddenCount: switcherHiddenCount,
+    hasMore: switcherHasMore,
+    showMore: showMoreOrgDirectory,
+    showSearch: showSwitcherSearch,
+  } = useOrgListWindow(orgDirectory, 20);
+
+  if (orgSelectionRequired) {
+    return (
+      <OrgSelectionScreen
+        orgs={orgDirectory}
+        onSelect={switchOrganization}
+        onSignOut={() => void signOut()}
+        busy={mutationBusy === "switch-organization"}
+        error={orgError}
+      />
+    );
+  }
 
   const access = getOrgAccessFlags(
     orgContext?.currentMember.role ?? "member",
@@ -202,12 +230,13 @@ export function OrgDashboardShell({ children }: { children: React.ReactNode }) {
     pathname,
     orgSlug: activeOrg?.slug,
   });
+  const mcpConnectionsEnabled = orgContext?.capabilities.mcpConnections === true;
 
-  // Seven top-level rows: Dashboard, Your Connections, Extensions, Models,
+  // Top-level rows: Dashboard, optional Your Connections, Extensions, Models,
   // Members, Analytics, Settings. Everything tool-shaped groups under
   // Extensions (in pipeline order: Sources feed Plugins, share via
-  // Marketplaces, beta Connections last); model config groups
-  // under Models; set-once governance groups under Settings.
+  // Marketplaces, alpha Connections last); model config groups under
+  // Models; set-once governance groups under Settings.
   const extensionsGroup: DashboardNavItem | null = access.isAdmin && activeOrg
     ? {
         href: getIntegrationsRoute(activeOrg.slug),
@@ -217,7 +246,7 @@ export function OrgDashboardShell({ children }: { children: React.ReactNode }) {
           { href: getIntegrationsRoute(activeOrg.slug), label: "Sources" },
           { href: getPluginsRoute(activeOrg.slug), label: "Plugins" },
           { href: getMarketplacesRoute(activeOrg.slug), label: "Marketplaces" },
-          { href: getMcpConnectionsRoute(activeOrg.slug), label: "Connections", badge: "Beta" },
+          { href: getMcpConnectionsRoute(activeOrg.slug), label: "Connections", badge: "Alpha" },
         ],
       }
     : null;
@@ -261,14 +290,16 @@ export function OrgDashboardShell({ children }: { children: React.ReactNode }) {
       label: "Dashboard",
       icon: Home,
     },
-    // Member-visible (not admin-gated): where each person connects their own
-    // account for per-member connections shared with them.
-    {
-      href: activeOrg ? getYourConnectionsRoute(activeOrg.slug) : "#",
-      label: "Your Connections",
-      icon: Plug,
-      badge: "Beta",
-    },
+    ...(mcpConnectionsEnabled
+      ? [{
+          // Member-visible (not admin-gated): where each person connects their
+          // own account for per-member connections shared with them.
+          href: activeOrg ? getYourConnectionsRoute(activeOrg.slug) : "#",
+          label: "Your Connections",
+          icon: Plug,
+          badge: "Alpha",
+        }]
+      : []),
     ...(extensionsGroup ? [extensionsGroup] : []),
     ...(modelsGroup ? [modelsGroup] : []),
     ...(access.isAdmin && activeOrg
@@ -280,7 +311,29 @@ export function OrgDashboardShell({ children }: { children: React.ReactNode }) {
     ...(settingsGroup ? [settingsGroup] : []),
   ];
 
-  const orgSwitcher = (
+  const orgSwitcher = isSingleOrgMode ? (
+    <div className="flex w-full items-center justify-between gap-3 rounded-xl px-2 py-2">
+      <div className="flex min-w-0 items-center gap-3">
+        <OrgMark name={activeOrg?.name ?? runtimeConfig.singleOrgName} />
+        <div className="min-w-0">
+          <p className="truncate text-[14px] font-medium text-gray-900">
+            {activeOrg?.name ?? runtimeConfig.singleOrgName}
+          </p>
+          <p className="truncate text-[12px] text-gray-500">
+            {activeOrg ? formatRoleLabel(activeOrg.role) : "Preparing workspace"}
+          </p>
+        </div>
+      </div>
+      <button
+        type="button"
+        onClick={() => void signOut()}
+        className="shrink-0 rounded-lg p-1.5 text-gray-400 transition hover:bg-gray-100 hover:text-gray-900"
+        aria-label="Sign out"
+      >
+        <LogOut className="h-4 w-4" />
+      </button>
+    </div>
+  ) : (
     <div className="relative">
       <button
         type="button"
@@ -321,9 +374,21 @@ export function OrgDashboardShell({ children }: { children: React.ReactNode }) {
               Switch workspace
             </p>
           </div>
-          
-          <div className="grid gap-0.5 px-1.5">
-            {orgDirectory.map((org) => (
+
+          {showSwitcherSearch ? (
+            <div className="px-2 pb-1">
+              <input
+                type="search"
+                value={switcherQuery}
+                onChange={(event) => setSwitcherQuery(event.target.value)}
+                placeholder="Search workspaces"
+                className="w-full rounded-lg border border-gray-200 bg-white px-2.5 py-1.5 text-[12px] text-gray-900 outline-none transition focus:border-gray-400"
+              />
+            </div>
+          ) : null}
+
+          <div className="grid max-h-64 gap-0.5 overflow-y-auto px-1.5">
+            {visibleOrgDirectory.map((org) => (
               <button
                 key={org.id}
                 type="button"
@@ -354,6 +419,22 @@ export function OrgDashboardShell({ children }: { children: React.ReactNode }) {
             ))}
           </div>
 
+          {switcherFilteredCount === 0 && switcherQuery ? (
+            <p className="px-3 py-1 text-[12px] text-gray-500">No organizations match your search.</p>
+          ) : null}
+
+          {switcherHasMore ? (
+            <div className="px-1.5">
+              <button
+                type="button"
+                onClick={showMoreOrgDirectory}
+                className="flex w-full items-center justify-center rounded-lg px-2 py-1.5 text-[12px] font-medium text-gray-600 transition-colors hover:bg-gray-50 hover:text-gray-900"
+              >
+                Show more ({switcherHiddenCount})
+              </button>
+            </div>
+          ) : null}
+
           <div className="px-1.5 mt-0.5">
             <Link
               href="/organization"
@@ -380,8 +461,6 @@ export function OrgDashboardShell({ children }: { children: React.ReactNode }) {
       ) : null}
     </div>
   );
-
-  const [sidebarOpen, setSidebarOpen] = useState(false);
 
   const sidebarContent = (
     <div className="flex flex-1 flex-col">

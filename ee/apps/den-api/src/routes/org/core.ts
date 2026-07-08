@@ -5,18 +5,21 @@ import type { Hono } from "hono"
 import { describeRoute } from "hono-openapi"
 import { z } from "zod"
 import { auth } from "../../auth.js"
+import { memberFacingMcpConnectionsEnabled } from "../../capability-sources/external-mcp-rollout.js"
 import { db } from "../../db.js"
 import { checkEntitlement, getOrganizationEntitlements, parseOrganizationPlan } from "../../entitlements.js"
 import { env } from "../../env.js"
 import { findEnterpriseAuthRequirementForEmail } from "../../enterprise-auth-requirement.js"
 import { authenticatedRoute, jsonValidator, orgMemberRoute, orgRoleRoute, publicRoute, queryValidator, resolveMemberTeamsMiddleware } from "../../middleware/index.js"
 import { denTypeIdSchema, enterprisePlanRequiredSchema, forbiddenSchema, invalidRequestSchema, jsonResponse, notFoundSchema, unauthorizedSchema } from "../../openapi.js"
+import { normalizeOrganizationCapabilities } from "../../organization-capabilities.js"
 import { validateInvitationAcceptVerification } from "../../organization-join-verification.js"
 import { normalizeOrganizationMetadata } from "../../organization-limits.js"
 import {
   acceptInvitationForUser,
   createOrganizationForUser,
   getInvitationPreview,
+  getSingletonSsoStatus,
   normalizeAllowedEmailDomains,
   OrganizationEmailDomainRestrictionError,
   setSessionActiveOrganization,
@@ -52,6 +55,13 @@ const resolveSsoByEmailResponseSchema = z.object({
   signInUrl: z.string().url(),
 }).meta({ ref: "ResolveOrganizationSsoByEmailResponse" })
 
+const singleOrgSsoStatusResponseSchema = z.object({
+  configured: z.boolean(),
+  organizationSlug: z.string(),
+  signInPath: z.string(),
+  signInUrl: z.string().url(),
+}).meta({ ref: "SingleOrgSsoStatusResponse" })
+
 const invitationPreviewQuerySchema = z.object({
   id: z.string().trim().min(1).max(255),
 })
@@ -63,6 +73,11 @@ const acceptInvitationSchema = z.object({
 const organizationResponseSchema = z.object({
   organization: z.object({}).passthrough().nullable(),
 }).meta({ ref: "OrganizationResponse" })
+
+const singleOrgModeSchema = z.object({
+  error: z.literal("single_org_mode"),
+  message: z.string(),
+}).meta({ ref: "SingleOrgModeError" })
 
 const organizationOwnerSchema = z.object({
   memberId: denTypeIdSchema("member"),
@@ -152,6 +167,7 @@ export function registerOrgCoreRoutes<T extends { Variables: OrgRouteVariables }
         400: jsonResponse("The organization creation request body was invalid.", invalidRequestSchema),
         401: jsonResponse("The caller must be signed in to create an organization.", unauthorizedSchema),
         403: jsonResponse("API keys cannot create organizations.", forbiddenSchema),
+        409: jsonResponse("Organization creation is disabled in single-org mode.", singleOrgModeSchema),
       },
     }),
     authenticatedRoute(),
@@ -162,6 +178,13 @@ export function registerOrgCoreRoutes<T extends { Variables: OrgRouteVariables }
         error: "forbidden",
         message: "API keys cannot create organizations.",
       }, 403)
+    }
+
+    if (env.orgMode === "single_org") {
+      return c.json({
+        error: "single_org_mode",
+        message: "This deployment is configured for one organization. New organizations cannot be created.",
+      }, 409)
     }
 
     const user = c.get("user")
@@ -363,6 +386,29 @@ export function registerOrgCoreRoutes<T extends { Variables: OrgRouteVariables }
   )
 
   app.get(
+    "/v1/orgs/sso/singleton",
+    describeRoute({
+      tags: ["Organizations"],
+      hide: true,
+      summary: "Resolve singleton organization SSO status",
+      description: "Returns whether the singleton organization has SSO configured for single-org deployments.",
+      responses: {
+        200: jsonResponse("Singleton organization SSO status returned successfully.", singleOrgSsoStatusResponseSchema),
+      },
+    }),
+    publicRoute,
+    async (c) => {
+      const status = await getSingletonSsoStatus()
+      return c.json({
+        configured: env.orgMode === "single_org" && status.configured,
+        organizationSlug: status.organizationSlug,
+        signInPath: status.signInPath,
+        signInUrl: new URL(status.signInPath, env.betterAuthTrustedOrigins[0] ?? env.betterAuthUrl).toString(),
+      })
+    },
+  )
+
+  app.get(
     "/v1/orgs/sso/resolve",
     describeRoute({
       tags: ["Organizations"],
@@ -410,6 +456,7 @@ export function registerOrgCoreRoutes<T extends { Variables: OrgRouteVariables }
     async (c) => {
       const payload = c.get("organizationContext")
       const owner = payload.members.find((member: typeof payload.members[number]) => member.isOwner) ?? null
+      const capabilities = normalizeOrganizationCapabilities(payload.organization.metadata)
       const [ssoRows, scimRows] = await Promise.all([
         db
           .select({ id: SsoConnectionTable.id })
@@ -440,6 +487,15 @@ export function registerOrgCoreRoutes<T extends { Variables: OrgRouteVariables }
         currentMemberTeams: c.get("memberTeams") ?? [],
         plan: parseOrganizationPlan(payload.organization.metadata),
         entitlements: getOrganizationEntitlements(payload.organization.metadata),
+        capabilities: {
+          ...capabilities,
+          // Expose the effective value, not the raw stored flag: org context
+          // answers whether the feature exists for this org on this deployment;
+          // /admin reads the raw capability from its own endpoint.
+          mcpConnections: memberFacingMcpConnectionsEnabled(payload.organization.metadata, {
+            gatingEnabled: env.mcpConnectionsGatingEnabled,
+          }),
+        },
         authMethods: {
           sso: Boolean(ssoRows[0]),
           scim: Boolean(scimRows[0]),

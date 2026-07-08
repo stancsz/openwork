@@ -1,12 +1,12 @@
 /**
  * fraimz on the PR: render the frame-by-frame proof as a PR comment and post
- * it with `gh`. The comment is the reviewable demo (verdict + per-frame claim,
- * voiceover, assertions); `fraimz.html` in the run directory stays the full
- * artifact with validated screenshots.
+ * it with `gh`. The comment is the follow-along demo: each frame reads as
+ * claim → voiceover → assertions → validated screenshot; `fraimz.html` in the
+ * run directory stays the full artifact.
  *
  * Frame screenshots are uploaded to Vercel Blob (see the `upload-photo`
  * skill) so they render inline in the PR comment. Requires
- * `BLOB_READ_WRITE_TOKEN` in the environment.
+ * `BLOB_READ_WRITE_TOKEN`, falling back to Infisical when unset.
  */
 import { spawnSync } from "node:child_process";
 import { existsSync, readFileSync } from "node:fs";
@@ -14,6 +14,18 @@ import { writeFile } from "node:fs/promises";
 import { basename, join } from "node:path";
 
 const BLOB_API_BASE = "https://blob.vercel-storage.com";
+
+function resolveBlobToken() {
+  const fromEnv = process.env.BLOB_READ_WRITE_TOKEN;
+  if (fromEnv) return fromEnv;
+  const result = spawnSync(
+    "infisical",
+    ["secrets", "get", "BLOB_READ_WRITE_TOKEN", "--plain", "--silent"],
+    { encoding: "utf8" },
+  );
+  const token = result.status === 0 && !result.error ? result.stdout.trim() : "";
+  return token.length > 0 ? token : null;
+}
 
 function contentTypeFor(file) {
   const lower = file.toLowerCase();
@@ -42,16 +54,54 @@ export function renderPrComment(report, imageUrls = null) {
     lines.push("");
     let frame = 0;
     for (const step of flow.steps ?? []) {
-      for (const evidence of step.evidence ?? []) {
-        if (evidence.type === "claim" && evidence.status === "passed") {
-          frame += 1;
-          lines.push(`${frame}. **${evidence.claim ?? evidence.name}**`);
-          if (evidence.voiceover) lines.push(`   > 🎙 ${evidence.voiceover}`);
+      const evidenceItems = step.evidence ?? [];
+      const opened = new Set();
+      let openClaim = null;
+      let narrated = null;
+      for (const [index, evidence] of evidenceItems.entries()) {
+        if (evidence.type === "claim") {
+          const key = evidence.name ?? evidence.claim;
+          const claim = evidence.claim ?? evidence.name;
+          if (evidence.status === "running") {
+            const closed = evidenceItems.slice(index + 1).some((item) => {
+              const itemKey = item.name ?? item.claim;
+              return item.type === "claim" && item.status === "passed" && itemKey === key;
+            });
+            frame += 1;
+            lines.push(`${frame}. ${closed ? "" : "❌ "}**${claim}**`);
+            opened.add(key);
+            openClaim = claim ?? null;
+            narrated = null;
+            if (evidence.voiceover) {
+              lines.push(`   > 🎙 ${evidence.voiceover}`);
+              narrated = evidence.voiceover;
+            }
+          } else if (evidence.status === "passed" && !opened.has(key)) {
+            frame += 1;
+            lines.push(`${frame}. **${claim}**`);
+            opened.add(key);
+            openClaim = claim ?? null;
+            narrated = null;
+            if (evidence.voiceover) {
+              lines.push(`   > 🎙 ${evidence.voiceover}`);
+              narrated = evidence.voiceover;
+            }
+          }
         }
         if (evidence.type === "assertion") {
           lines.push(`   - ${evidence.status === "passed" ? "✅" : "❌"} ${evidence.assertion}`);
         }
         if (evidence.type === "frame") {
+          if (evidence.claim && evidence.claim !== openClaim) {
+            frame += 1;
+            lines.push(`${frame}. **${evidence.claim}**`);
+            openClaim = evidence.claim;
+            narrated = null;
+          }
+          if (evidence.voiceover && evidence.voiceover !== narrated) {
+            lines.push(`   > 🎙 ${evidence.voiceover}`);
+            narrated = evidence.voiceover;
+          }
           const failed = (evidence.validations ?? []).filter((validation) => !validation.passed);
           lines.push(
             `   - 📸 \`${evidence.file}\` — ${failed.length === 0 ? `${(evidence.validations ?? []).length} validations passed` : `FAILED: ${failed.map((validation) => validation.label).join(", ")}`}`,
@@ -83,10 +133,11 @@ export async function uploadRunImages(report, outDir) {
   }
   if (files.length === 0) return null;
 
-  const token = process.env.BLOB_READ_WRITE_TOKEN;
+  const token = resolveBlobToken();
   if (!token) {
     throw new Error(
-      "BLOB_READ_WRITE_TOKEN is not set — fetch it with the get-env-var skill: " +
+      "BLOB_READ_WRITE_TOKEN is not set and could not be fetched from Infisical (`infisical secrets get BLOB_READ_WRITE_TOKEN --plain --silent`) — " +
+        "run `infisical login` once, or export it: " +
         'export BLOB_READ_WRITE_TOKEN="$(infisical secrets get BLOB_READ_WRITE_TOKEN --plain --silent)"',
     );
   }

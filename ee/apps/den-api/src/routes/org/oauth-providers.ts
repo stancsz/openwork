@@ -19,7 +19,13 @@ import {
   verifyOAuthStateToken,
 } from "../../capability-sources/generic-oauth.js"
 import { connectCallbackPage } from "../../capability-sources/oauth-callback-page.js"
-import { getNativeOAuthProvider, NATIVE_OAUTH_PROVIDERS, type NativeOAuthProviderConfig } from "../../capability-sources/provider-registry.js"
+import {
+  clientSelectedFeatures,
+  getNativeOAuthProvider,
+  NATIVE_OAUTH_PROVIDERS,
+  resolveProviderScopes,
+  type NativeOAuthProviderConfig,
+} from "../../capability-sources/provider-registry.js"
 import {
   disconnectAccount,
   getConnectedAccount,
@@ -35,8 +41,9 @@ const providerParamsSchema = z.object({
 })
 
 const saveClientBodySchema = z.object({
-  clientId: z.string().trim().min(1).max(512),
+  clientId: z.string().trim().min(1).max(512).optional(),
   clientSecret: z.string().trim().min(1).max(4096).optional(),
+  features: z.array(z.string().trim().min(1).max(128)).optional(),
 })
 
 const oauthNotFoundSchema = z.object({
@@ -48,7 +55,17 @@ const clientConfigResponseSchema = z.object({
   ok: z.literal(true),
   providerId: z.string(),
   clientId: z.string(),
+  features: z.array(z.string()),
 }).meta({ ref: "OAuthClientConfigResponse" })
+
+const clientConfigDetailResponseSchema = z.object({
+  providerId: z.string(),
+  configured: z.boolean(),
+  clientId: z.string().nullable(),
+  features: z.array(z.string()),
+  scopes: z.array(z.string()),
+  redirectUri: z.string(),
+}).meta({ ref: "OAuthClientConfigDetailResponse" })
 
 const connectStartResponseSchema = z.object({
   authorizeUrl: z.string(),
@@ -153,15 +170,73 @@ export function registerOAuthProviderRoutes<T extends { Variables: OrgRouteVaria
       }
 
       const body = c.req.valid("json")
-      await upsertOrgOAuthClient({
+      const existing = await getOrgOAuthClient(payload.organization.id, providerId)
+      if (!existing && !body.clientId) {
+        return c.json({ error: "invalid_request", message: "clientId is required for first-time setup." }, 400)
+      }
+
+      if (body.features !== undefined) {
+        const optionalFeatures = provider.optionalFeatures ?? {}
+        const unknownFeatures = body.features.filter((feature) => !Object.hasOwn(optionalFeatures, feature))
+        if (unknownFeatures.length > 0) {
+          return c.json({ error: "invalid_request", message: `Unknown optional feature(s): ${unknownFeatures.join(", ")}.` }, 400)
+        }
+      }
+
+      const clientId = body.clientId ?? existing?.clientId
+      if (!clientId) {
+        return c.json({ error: "invalid_request", message: "clientId is required for first-time setup." }, 400)
+      }
+
+      const saved = await upsertOrgOAuthClient({
         organizationId: payload.organization.id,
         providerId,
-        clientId: body.clientId,
-        clientSecret: body.clientSecret,
+        clientId,
+        ...(body.clientSecret !== undefined ? { clientSecret: body.clientSecret } : {}),
+        ...(body.features !== undefined ? { extra: { ...(existing?.extra ?? {}), features: body.features } } : {}),
         createdByOrgMembershipId: payload.currentMember.id,
       })
 
-      return c.json({ ok: true as const, providerId, clientId: body.clientId })
+      return c.json({ ok: true, providerId, clientId: saved.clientId, features: clientSelectedFeatures(provider, saved.extra) })
+    },
+  )
+
+  app.get(
+    "/v1/oauth-providers/:providerId/client",
+    describeRoute({
+      tags: ["Authentication"],
+      summary: "Get an org's OAuth client configuration for a provider",
+      description: "Admin-only. Returns setup status, the saved OAuth client id when configured, selected permission features, the callback redirect URI, and the full scope list members will be asked to approve. Never returns the client secret.",
+      responses: {
+        200: jsonResponse("OAuth client configuration.", clientConfigDetailResponseSchema),
+        401: jsonResponse("The caller must be signed in.", unauthorizedSchema),
+        403: jsonResponse("Only workspace owners and admins can view an OAuth client configuration.", forbiddenSchema),
+        404: jsonResponse("Unknown providerId.", oauthNotFoundSchema),
+      },
+    }),
+    orgMemberRoute(),
+    paramValidator(providerParamsSchema),
+    async (c) => {
+      const payload = c.get("organizationContext")
+      const admin = ensureOrganizationAdmin(c, "Only workspace owners and admins can view an OAuth client configuration.")
+      if (!admin.ok) return c.json(admin.response, orgAccessFailureStatus(admin.response))
+
+      const { providerId } = c.req.valid("param")
+      const provider = getNativeOAuthProvider(providerId)
+      if (!provider) {
+        return c.json({ error: "unknown_oauth_provider", message: `"${providerId}" is not a known native OAuth provider.` }, 404)
+      }
+
+      const client = await getOrgOAuthClient(payload.organization.id, providerId)
+      const features = clientSelectedFeatures(provider, client?.extra ?? null)
+      return c.json({
+        providerId,
+        configured: Boolean(client),
+        clientId: client?.clientId ?? null,
+        features,
+        scopes: resolveProviderScopes(provider, features),
+        redirectUri: callbackRedirectUri(c.req.raw, providerId),
+      })
     },
   )
 
@@ -297,7 +372,7 @@ export function registerOAuthProviderRoutes<T extends { Variables: OrgRouteVaria
           refreshToken: tokens.refresh_token ?? null,
           tokenType: tokens.token_type ?? null,
           expiresAt: tokens.expires_in ? new Date(Date.now() + tokens.expires_in * 1000) : null,
-          scopes: tokens.scope ? tokens.scope.split(" ") : provider.defaultScopes,
+          scopes: tokens.scope ? tokens.scope.split(" ") : resolveProviderScopes(provider, clientSelectedFeatures(provider, client.extra)),
           pendingCodeVerifier: null,
         })
       } catch (error) {

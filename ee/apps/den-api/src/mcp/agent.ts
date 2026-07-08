@@ -1,17 +1,34 @@
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js"
 import { StreamableHTTPTransport } from "@hono/mcp"
+import { eq } from "@openwork-ee/den-db/drizzle"
+import { OrganizationTable } from "@openwork-ee/den-db/schema"
+import { normalizeDenTypeId } from "@openwork-ee/utils/typeid"
 import type { Hono } from "hono"
 import { z } from "zod"
+import { memberFacingMcpConnectionsEnabled } from "../capability-sources/external-mcp-rollout.js"
 import { publicRoute, tokenRoute } from "../middleware/index.js"
+import { db } from "../db.js"
 import { getMcpResourceUrl, verifyMcpRequest } from "./auth.js"
 import { invokeMcpOperation, normalizeToolBody, normalizeToolRecord } from "./invoke.js"
 import { getCatalog, protectedResourceMetadata } from "./index.js"
 import { SEARCH_CAPABILITIES_TOOL_NAME, searchCapabilities } from "./search.js"
 import { executeExternalCapability, parseExternalCapabilityName, resolveMcpMemberIdentity, searchExternalCapabilities } from "./external-capabilities.js"
+import { executeMarketplaceCapability, parseMarketplaceCapabilityName, searchMarketplaceCapabilities } from "./marketplace-capabilities.js"
 import { resolvePublicOrigin } from "../capability-sources/generic-oauth.js"
 import { env } from "../env.js"
 
 export const EXECUTE_CAPABILITY_TOOL_NAME = "execute_capability"
+
+function textContent(text: string): { text: string; type: "text" }[] {
+  return [{ type: "text", text }]
+}
+
+function unknownCapabilityText(name: string): string {
+  return JSON.stringify({
+    error: "unknown_capability",
+    message: `No capability named "${name}". Call search_capabilities to find a valid name.`,
+  })
+}
 
 /**
  * The minimal, harness-facing MCP surface: exactly two tools, full stop.
@@ -51,6 +68,15 @@ export function registerAgentMcpRoutes<T extends { Variables: Record<string, unk
       userId: principal.userId,
       organizationId: principal.organizationId,
     })
+    const organizationId = normalizeDenTypeId("organization", principal.organizationId)
+    const organizationRows = await db
+      .select({ metadata: OrganizationTable.metadata })
+      .from(OrganizationTable)
+      .where(eq(OrganizationTable.id, organizationId))
+      .limit(1)
+    const externalMcpConnectionsEnabled = memberFacingMcpConnectionsEnabled(organizationRows[0]?.metadata, {
+      gatingEnabled: env.mcpConnectionsGatingEnabled,
+    })
     const server = new McpServer({
       name: "openwork-den-api-agent",
       version: "1.0.0",
@@ -77,14 +103,25 @@ export function registerAgentMcpRoutes<T extends { Variables: Record<string, unk
         // tools/list (capability-sources/external-mcp-client.ts) — a
         // Notion/Linear/Stripe/... connection an admin added in Den shows
         // up here exactly like any native capability, ranked together.
-        const externalMatches = await searchExternalCapabilities({
-          organizationId: principal.organizationId,
-          member: memberIdentity,
-          query,
-          redirectUriBase: resolvePublicOrigin(c.req.raw, env.apiPublicUrl),
-          limit: boundedLimit,
-        })
-        const matches = [...restMatches, ...externalMatches]
+        const externalMatches = externalMcpConnectionsEnabled
+          ? await searchExternalCapabilities({
+            organizationId: principal.organizationId,
+            member: memberIdentity,
+            query,
+            redirectUriBase: resolvePublicOrigin(c.req.raw, env.apiPublicUrl),
+            limit: boundedLimit,
+          })
+          : []
+        const marketplaceMatches = externalMcpConnectionsEnabled
+          ? await searchMarketplaceCapabilities({
+            organizationId: principal.organizationId,
+            member: memberIdentity,
+            query,
+            limit: boundedLimit,
+            enabled: externalMcpConnectionsEnabled,
+          })
+          : []
+        const matches = [...restMatches, ...externalMatches, ...marketplaceMatches]
           .sort((a, b) => b.score - a.score)
           .slice(0, boundedLimit)
         const text = matches.length > 0
@@ -113,6 +150,18 @@ export function registerAgentMcpRoutes<T extends { Variables: Record<string, unk
       async ({ name, path, query, body }) => {
         const external = parseExternalCapabilityName(name)
         if (external) {
+          if (!externalMcpConnectionsEnabled) {
+            return {
+              isError: true,
+              content: [{
+                type: "text",
+                text: JSON.stringify({
+                  error: "unknown_capability",
+                  message: "No external MCP connection capabilities are available for this organization.",
+                }),
+              }],
+            }
+          }
           const normalizedBody = normalizeToolBody(body)
           const args = (typeof normalizedBody === "object" && normalizedBody !== null && !Array.isArray(normalizedBody)
             ? normalizedBody
@@ -140,17 +189,32 @@ export function registerAgentMcpRoutes<T extends { Variables: Record<string, unk
           return { content }
         }
 
+        const marketplace = parseMarketplaceCapabilityName(name)
+        if (marketplace) {
+          const result = await executeMarketplaceCapability({
+            organizationId: principal.organizationId,
+            member: memberIdentity,
+            pluginId: marketplace.pluginId,
+            configObjectId: marketplace.configObjectId,
+            body,
+            enabled: externalMcpConnectionsEnabled,
+          })
+          if (!result.ok) {
+            return {
+              isError: true,
+              content: textContent(result.error === "unknown_capability"
+                ? unknownCapabilityText(name)
+                : JSON.stringify({ error: result.error, message: result.message })),
+            }
+          }
+          return { content: textContent(JSON.stringify(result.result, null, 2)) }
+        }
+
         const operation = catalog.find((candidate) => candidate.name === name)
         if (!operation) {
           return {
             isError: true,
-            content: [{
-              type: "text" as const,
-              text: JSON.stringify({
-                error: "unknown_capability",
-                message: `No capability named "${name}". Call search_capabilities to find a valid name.`,
-              }),
-            }],
+            content: textContent(unknownCapabilityText(name)),
           }
         }
 

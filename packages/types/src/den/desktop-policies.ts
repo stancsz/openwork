@@ -150,6 +150,7 @@ export const desktopConfigSchema = desktopPolicyValueSchema
       .optional(),
     brandLogoUrl: z.string().url().max(2048).optional(),
     brandAccentColor: z.enum(brandAccentColorValues).optional(),
+    connectEnabled: z.boolean().optional(),
   })
   .meta({ ref: "DenDesktopConfig" });
 
@@ -275,11 +276,14 @@ export function normalizeDesktopConfig(value: unknown): DesktopConfig {
   );
   const brandLogoUrl = normalizeBrandLogoUrl(raw?.brandLogoUrl);
   const brandAccentColor = normalizeBrandAccentColor(raw?.brandAccentColor);
+  const connectEnabled =
+    typeof raw?.connectEnabled === "boolean" ? raw.connectEnabled : undefined;
 
   return {
     ...policy,
     ...(allowedDesktopVersions !== undefined ? { allowedDesktopVersions } : {}),
     ...(brandLogoUrl !== undefined ? { brandLogoUrl } : {}),
     ...(brandAccentColor !== undefined ? { brandAccentColor } : {}),
+    ...(connectEnabled !== undefined ? { connectEnabled } : {}),
   };
 }

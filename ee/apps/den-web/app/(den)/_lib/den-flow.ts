@@ -1,9 +1,10 @@
 import { DEN_WORKER_POLL_INTERVAL_MS } from "./CONSTS";
+import { ORG_SCOPE_HEADER, getRequestOrgScope, shouldPinOrgScopePath } from "./org-scope";
 
 export type AuthMode = "sign-in" | "sign-up";
 export type SocialAuthProvider = "github" | "google";
 export type WorkerStatusBucket = "ready" | "starting" | "attention" | "other";
-export type RuntimeServiceName = "openwork-server" | "opencode" | "opencode-router";
+export type RuntimeServiceName = "openwork-server" | "opencode";
 export type EventLevel = "info" | "success" | "warning" | "error";
 export type AuthMethod = "email" | SocialAuthProvider;
 
@@ -622,8 +623,6 @@ export function getRuntimeServiceLabel(name: RuntimeServiceName): string {
       return "OpenWork server";
     case "opencode":
       return "OpenCode";
-    case "opencode-router":
-      return "OpenCode Router";
   }
 }
 
@@ -1051,6 +1050,11 @@ export async function requestJson(path: string, init: RequestInit = {}, timeoutM
     headers.set("Content-Type", "application/json");
   }
 
+  const orgScope = getRequestOrgScope();
+  if (orgScope && !headers.has(ORG_SCOPE_HEADER) && shouldPinOrgScopePath(path)) {
+    headers.set(ORG_SCOPE_HEADER, orgScope);
+  }
+
   const shouldAttachTimeout = !init.signal && timeoutMs > 0;
   const timeoutController = shouldAttachTimeout ? new AbortController() : null;
   const timeoutHandle = timeoutController
@@ -1083,6 +1087,11 @@ export async function requestJson(path: string, init: RequestInit = {}, timeoutM
     } catch {
       payload = text;
     }
+  }
+
+  const reauthError = getReauthRequiredError(payload, response);
+  if (reauthError) {
+    throw reauthError;
   }
 
   return { response, payload, text };

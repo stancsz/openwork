@@ -4,6 +4,19 @@ import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { getRequestError, requestJson } from "../../_lib/den-flow";
 import { useOrgDashboard } from "../_providers/org-dashboard-provider";
 
+const ORG_SCOPE_HEADER = "x-openwork-org-id";
+
+function getOrgScopeHeaders(orgId: string) {
+  return { [ORG_SCOPE_HEADER]: orgId };
+}
+
+function requireOrgId(orgId: string | null) {
+  if (!orgId) {
+    throw new Error("Select an organization before managing connections.");
+  }
+  return orgId;
+}
+
 export type ExternalMcpAuthType = "oauth" | "apikey" | "none";
 export type ExternalMcpCredentialMode = "shared" | "per_member";
 export type ExternalMcpConnectionScope = "usable" | "manageable";
@@ -23,6 +36,8 @@ export type ExternalMcpConnection = {
   connected: boolean;
   connectedAt: string | null;
   connectedForMe: boolean;
+  needsReconnect?: boolean;
+  missingFeatures?: string[];
   access: ExternalMcpAccessSummary | null;
 };
 
@@ -32,22 +47,57 @@ export type ExternalMcpPreset = {
   description: string;
   url: string;
   authType: ExternalMcpAuthType;
+  requiresOAuthClient?: boolean;
 };
+
+export type CreatedMcpConnection = ExternalMcpConnection & {
+  links?: {
+    yourConnections?: string;
+    oauthCallback?: string;
+  };
+};
+
+export function isNativeProviderConnectionId(id: string): boolean {
+  // Today google-workspace is the only native provider connection id; a follow-up generalizes this for external per-member connections.
+  return id === "google-workspace";
+}
+
+export function canDisconnectNativeProviderAccount(connection: Pick<ExternalMcpConnection, "id" | "connectedForMe">): boolean {
+  return connection.connectedForMe && isNativeProviderConnectionId(connection.id);
+}
 
 export const mcpConnectionQueryKeys = {
   all: ["mcp-connections"] as const,
   list: (orgId?: string | null, scope?: ExternalMcpConnectionScope) =>
     [...mcpConnectionQueryKeys.all, "list", orgId ?? "none", scope ?? "usable"] as const,
   presets: () => [...mcpConnectionQueryKeys.all, "presets"] as const,
+  nativeProviderClient: (orgId?: string | null, providerId?: string | null) =>
+    [...mcpConnectionQueryKeys.all, "native-provider-client", orgId ?? "none", providerId ?? "none"],
 };
 
-async function fetchConnections(scope: ExternalMcpConnectionScope): Promise<ExternalMcpConnection[]> {
-  const { response, payload } = await requestJson(`/v1/mcp-connections?scope=${scope}`, {}, 15000);
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null;
+}
+
+function isStringArray(value: unknown): value is string[] {
+  return Array.isArray(value) && value.every((entry) => typeof entry === "string");
+}
+
+async function fetchConnections(scope: ExternalMcpConnectionScope, orgId: string): Promise<ExternalMcpConnection[]> {
+  const { response, payload } = await requestJson(
+    `/v1/mcp-connections?scope=${scope}`,
+    { headers: getOrgScopeHeaders(orgId) },
+    15000,
+  );
   if (!response.ok) {
     throw getRequestError(payload, response, `Failed to load MCP connections (${response.status}).`);
   }
   const record = payload as { connections?: ExternalMcpConnection[] };
-  return record.connections ?? [];
+  return (record.connections ?? []).map((connection) => ({
+    ...connection,
+    ...(typeof connection.needsReconnect === "boolean" ? { needsReconnect: connection.needsReconnect } : {}),
+    ...(isStringArray(connection.missingFeatures) ? { missingFeatures: connection.missingFeatures } : {}),
+  }));
 }
 
 export function useMcpConnections(scope: ExternalMcpConnectionScope = "manageable") {
@@ -55,7 +105,7 @@ export function useMcpConnections(scope: ExternalMcpConnectionScope = "manageabl
   return useQuery({
     enabled: Boolean(orgId),
     queryKey: mcpConnectionQueryKeys.list(orgId, scope),
-    queryFn: () => fetchConnections(scope),
+    queryFn: () => fetchConnections(scope, requireOrgId(orgId)),
   });
 }
 
@@ -85,6 +135,10 @@ export type CreateMcpConnectionInput = {
   authType: ExternalMcpAuthType;
   credentialMode: ExternalMcpCredentialMode;
   apiKey?: string;
+  oauthClient?: {
+    clientId: string;
+    clientSecret?: string;
+  };
   access: McpConnectionAccessInput;
 };
 
@@ -93,18 +147,18 @@ export function useCreateMcpConnection() {
   const { orgId, runReauthableAction } = useOrgDashboard();
 
   return useMutation({
-    mutationFn: async (input: CreateMcpConnectionInput): Promise<ExternalMcpConnection> => {
-      let created: ExternalMcpConnection | null = null;
+    mutationFn: async (input: CreateMcpConnectionInput): Promise<CreatedMcpConnection> => {
+      let created: CreatedMcpConnection | null = null;
       await runReauthableAction("create-mcp-connection", async () => {
         const { response, payload } = await requestJson(
           "/v1/mcp-connections",
-          { method: "POST", body: JSON.stringify(input) },
+          { method: "POST", headers: getOrgScopeHeaders(requireOrgId(orgId)), body: JSON.stringify(input) },
           20000,
         );
         if (!response.ok) {
           throw getRequestError(payload, response, `Failed to add MCP connection (${response.status}).`);
         }
-        created = payload as ExternalMcpConnection;
+        created = payload as CreatedMcpConnection;
       });
       if (!created) throw new Error("Create MCP connection response was incomplete.");
       return created;
@@ -117,7 +171,7 @@ export function useCreateMcpConnection() {
 
 export function useReplaceMcpConnectionAccess() {
   const queryClient = useQueryClient();
-  const { runReauthableAction } = useOrgDashboard();
+  const { orgId, runReauthableAction } = useOrgDashboard();
 
   return useMutation({
     mutationFn: async (input: { connectionId: string; access: McpConnectionAccessInput }): Promise<string> => {
@@ -125,7 +179,7 @@ export function useReplaceMcpConnectionAccess() {
       await runReauthableAction("replace-mcp-connection-access", async () => {
         const { response, payload } = await requestJson(
           `/v1/mcp-connections/${encodeURIComponent(input.connectionId)}/access`,
-          { method: "PUT", body: JSON.stringify({ access: input.access }) },
+          { method: "PUT", headers: getOrgScopeHeaders(requireOrgId(orgId)), body: JSON.stringify({ access: input.access }) },
           15000,
         );
         if (!response.ok) {
@@ -143,17 +197,41 @@ export function useReplaceMcpConnectionAccess() {
 }
 
 export function useStartMcpConnectionOAuth() {
+  const { orgId } = useOrgDashboard();
+
   return useMutation({
     mutationFn: async (connectionId: string): Promise<{ status: "connected" | "needs_auth"; authorizeUrl: string | null }> => {
       const { response, payload } = await requestJson(
         `/v1/mcp-connections/${encodeURIComponent(connectionId)}/connect/start`,
-        {},
+        { headers: getOrgScopeHeaders(requireOrgId(orgId)) },
         20000,
       );
       if (!response.ok) {
         throw getRequestError(payload, response, `Failed to start OAuth (${response.status}).`);
       }
       return payload as { status: "connected" | "needs_auth"; authorizeUrl: string | null };
+    },
+  });
+}
+
+export function useDisconnectMyProviderAccount() {
+  const queryClient = useQueryClient();
+  const { orgId } = useOrgDashboard();
+
+  return useMutation({
+    mutationFn: async (providerId: string): Promise<string> => {
+      const { response, payload } = await requestJson(
+        `/v1/oauth-providers/${encodeURIComponent(providerId)}/disconnect`,
+        { method: "POST", headers: getOrgScopeHeaders(requireOrgId(orgId)) },
+        15000,
+      );
+      if (!response.ok) {
+        throw getRequestError(payload, response, `Failed to disconnect account (${response.status}).`);
+      }
+      return providerId;
+    },
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: mcpConnectionQueryKeys.all });
     },
   });
 }
@@ -168,7 +246,7 @@ export function useDeleteMcpConnection() {
       await runReauthableAction("delete-mcp-connection", async () => {
         const { response, payload } = await requestJson(
           `/v1/mcp-connections/${encodeURIComponent(connectionId)}`,
-          { method: "DELETE" },
+          { method: "DELETE", headers: getOrgScopeHeaders(requireOrgId(orgId)) },
           15000,
         );
         if (!response.ok) {
@@ -187,9 +265,37 @@ export function useDeleteMcpConnection() {
 
 export type SaveNativeProviderClientInput = {
   providerId: string;
-  clientId: string;
-  clientSecret: string;
+  clientId?: string;
+  clientSecret?: string;
+  features: string[];
 };
+
+export type NativeProviderClient = {
+  providerId: string;
+  configured: boolean;
+  clientId: string | null;
+  features: string[];
+  scopes: string[];
+  redirectUri: string;
+};
+
+function parseNativeProviderClient(payload: unknown): NativeProviderClient {
+  if (!isRecord(payload)) {
+    throw new Error("Native provider client response was incomplete.");
+  }
+  const { providerId, configured, clientId, features, scopes, redirectUri } = payload;
+  if (
+    typeof providerId !== "string"
+    || typeof configured !== "boolean"
+    || (typeof clientId !== "string" && clientId !== null)
+    || !isStringArray(features)
+    || !isStringArray(scopes)
+    || typeof redirectUri !== "string"
+  ) {
+    throw new Error("Native provider client response was incomplete.");
+  }
+  return { providerId, configured, clientId, features, scopes, redirectUri };
+}
 
 /**
  * Native providers (google-workspace) are configured with an org OAuth
@@ -198,14 +304,24 @@ export type SaveNativeProviderClientInput = {
  */
 export function useSaveNativeProviderClient() {
   const queryClient = useQueryClient();
-  const { runReauthableAction } = useOrgDashboard();
+  const { orgId, runReauthableAction } = useOrgDashboard();
 
   return useMutation({
     mutationFn: async (input: SaveNativeProviderClientInput): Promise<void> => {
       await runReauthableAction("save-native-oauth-client", async () => {
+        const clientId = input.clientId?.trim();
+        const clientSecret = input.clientSecret?.trim();
         const { response, payload } = await requestJson(
           `/v1/oauth-providers/${encodeURIComponent(input.providerId)}/client`,
-          { method: "POST", body: JSON.stringify({ clientId: input.clientId, clientSecret: input.clientSecret }) },
+          {
+            method: "POST",
+            headers: getOrgScopeHeaders(requireOrgId(orgId)),
+            body: JSON.stringify({
+              ...(clientId ? { clientId } : {}),
+              ...(clientSecret ? { clientSecret } : {}),
+              features: input.features,
+            }),
+          },
           20000,
         );
         if (!response.ok) {
@@ -215,6 +331,26 @@ export function useSaveNativeProviderClient() {
     },
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: mcpConnectionQueryKeys.all });
+    },
+  });
+}
+
+export function useNativeProviderClient(providerId: string, enabled: boolean) {
+  const { orgId } = useOrgDashboard();
+
+  return useQuery({
+    enabled: enabled && Boolean(orgId),
+    queryKey: mcpConnectionQueryKeys.nativeProviderClient(orgId, providerId),
+    queryFn: async (): Promise<NativeProviderClient> => {
+      const { response, payload } = await requestJson(
+        `/v1/oauth-providers/${encodeURIComponent(providerId)}/client`,
+        { headers: getOrgScopeHeaders(requireOrgId(orgId)) },
+        15000,
+      );
+      if (!response.ok) {
+        throw getRequestError(payload, response, `Failed to load the OAuth client (${response.status}).`);
+      }
+      return parseNativeProviderClient(payload);
     },
   });
 }

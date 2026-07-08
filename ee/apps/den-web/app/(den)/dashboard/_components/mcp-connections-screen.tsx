@@ -6,8 +6,10 @@ import { DenButton } from "../../_components/ui/button";
 import { DenInput } from "../../_components/ui/input";
 import { DashboardPageTemplate } from "../../_components/ui/dashboard-page-template";
 import { IntegrationIcon } from "./integration-icon";
+import { shouldShowMcpConnectionsStagingBanner } from "./mcp-connections-capability";
 import { useOrgDashboard } from "../_providers/org-dashboard-provider";
 import {
+  type CreatedMcpConnection,
   type CreateMcpConnectionInput,
   type ExternalMcpAuthType,
   type ExternalMcpConnection,
@@ -19,6 +21,7 @@ import {
   useDeleteMcpConnection,
   useMcpConnectionPresets,
   useMcpConnections,
+  useNativeProviderClient,
   useSaveNativeProviderClient,
   useStartMcpConnectionOAuth,
 } from "./mcp-connections-data";
@@ -26,7 +29,71 @@ import {
 const OAUTH_POLL_INTERVAL_MS = 2000;
 const OAUTH_POLL_TIMEOUT_MS = 90_000;
 
+const GOOGLE_WORKSPACE_DEFAULT_FEATURES = ["calendarRead", "gmailDraft", "driveFile"];
+
+const GOOGLE_WORKSPACE_PERMISSION_GROUPS = [
+  {
+    name: "Calendar",
+    permissions: [
+      { key: "calendarRead", label: "Read calendar" },
+      { key: "calendarWrite", label: "Create calendar events" },
+    ],
+  },
+  {
+    name: "Gmail",
+    permissions: [
+      { key: "gmailDraft", label: "Draft emails" },
+      { key: "gmailRead", label: "Read Gmail" },
+    ],
+  },
+  {
+    name: "Drive",
+    permissions: [
+      { key: "driveFile", label: "Work with selected Drive files" },
+      { key: "driveRead", label: "Read all Drive files" },
+      { key: "driveFull", label: "Full Drive access" },
+    ],
+  },
+  {
+    name: "Chat",
+    permissions: [
+      { key: "chat", label: "Google Chat" },
+    ],
+  },
+];
+
+async function copyTextToClipboard(text: string): Promise<boolean> {
+  try {
+    const clipboard = navigator.clipboard;
+    if (clipboard) {
+      await clipboard.writeText(text);
+      return true;
+    }
+  } catch {
+    // Fall through to the textarea fallback.
+  }
+
+  const textarea = document.createElement("textarea");
+  textarea.value = text;
+  textarea.setAttribute("readonly", "");
+  textarea.style.position = "fixed";
+  textarea.style.left = "-9999px";
+  textarea.style.top = "0";
+  document.body.appendChild(textarea);
+  textarea.focus();
+  textarea.select();
+
+  try {
+    return document.execCommand("copy");
+  } catch {
+    return false;
+  } finally {
+    textarea.remove();
+  }
+}
+
 export function McpConnectionsScreen() {
+  const { orgContext } = useOrgDashboard();
   const { data: connections = [], isLoading, error, refetch } = useMcpConnections();
   const { data: usableConnections = [] } = useMcpConnections("usable");
   const { data: presets = [] } = useMcpConnectionPresets();
@@ -39,6 +106,7 @@ export function McpConnectionsScreen() {
   const [formPreset, setFormPreset] = useState<ExternalMcpPreset | null>(null);
   const [googleDialogOpen, setGoogleDialogOpen] = useState(false);
   const googleConfigured = usableConnections.some((connection) => connection.id === "google-workspace");
+  const showStagingBanner = orgContext ? shouldShowMcpConnectionsStagingBanner(orgContext.capabilities) : false;
   const [pollingConnectionId, setPollingConnectionId] = useState<string | null>(null);
   const pollTimer = useRef<ReturnType<typeof setInterval> | null>(null);
 
@@ -80,8 +148,11 @@ export function McpConnectionsScreen() {
     }
   }
 
-  async function handleCreate(input: CreateMcpConnectionInput) {
+  async function handleCreate(input: CreateMcpConnectionInput): Promise<CreatedMcpConnection> {
     const created = await createConnection.mutateAsync(input);
+    if (input.oauthClient) {
+      return created;
+    }
     setFormOpen(false);
     setFormPreset(null);
     // Shared-credential OAuth: the admin authorizes the org's single account
@@ -90,16 +161,26 @@ export function McpConnectionsScreen() {
     if (input.authType === "oauth" && input.credentialMode === "shared") {
       await handleConnectOAuth(created.id);
     }
+    return created;
   }
 
   return (
     <DashboardPageTemplate
       icon={Plug}
       title="Connections"
-      badgeLabel="Beta"
+      badgeLabel="Alpha"
       description="Connect any MCP server — Notion, Linear, Stripe, or a custom URL — once for the whole org. search_capabilities and execute_capability pick these up automatically."
       colors={["#E2E8F0", "#020617", "#0F172A", "#94A3B8"]}
     >
+      {showStagingBanner ? (
+        <div data-testid="mcp-connections-staging-banner" className="mb-6 rounded-[24px] border border-amber-200 bg-amber-50 px-5 py-4 text-[14px] leading-6 text-amber-800">
+          <p className="font-semibold text-amber-900">OpenWork Connect (alpha) is staged for this org.</p>
+          <p className="mt-1">
+            Connections and marketplace capabilities you set up here stay staged and invisible to members until a platform admin enables OpenWork Connect (alpha) for this org. Admin management remains fully usable.
+          </p>
+        </div>
+      ) : null}
+
       {error ? (
         <div className="mb-6 rounded-[24px] border border-red-200 bg-red-50 px-5 py-4 text-[14px] text-red-700">
           {error instanceof Error ? error.message : "Failed to load MCP connections."}
@@ -234,25 +315,55 @@ function GoogleWorkspaceDialog({
   submitting: boolean;
   error: unknown;
   onClose: () => void;
-  onSubmit: (input: { clientId: string; clientSecret: string }) => void;
+  onSubmit: (input: { clientId?: string; clientSecret?: string; features: string[] }) => void;
 }) {
+  const clientConfig = useNativeProviderClient("google-workspace", open);
   const [clientId, setClientId] = useState("");
   const [clientSecret, setClientSecret] = useState("");
+  const [features, setFeatures] = useState<string[]>([]);
+  const [copiedRedirectUri, setCopiedRedirectUri] = useState(false);
+  const featuresPrefilled = useRef(false);
 
   useEffect(() => {
     if (!open) return;
     setClientId("");
     setClientSecret("");
+    setFeatures(GOOGLE_WORKSPACE_DEFAULT_FEATURES);
+    setCopiedRedirectUri(false);
+    featuresPrefilled.current = false;
   }, [open]);
+
+  useEffect(() => {
+    if (!open || featuresPrefilled.current || !clientConfig.isSuccess || clientConfig.isFetching) return;
+    setFeatures(clientConfig.data.features);
+    featuresPrefilled.current = true;
+  }, [open, clientConfig.isSuccess, clientConfig.isFetching, clientConfig.data?.features]);
 
   if (!open) {
     return null;
   }
 
+  const configured = clientConfig.data?.configured ?? false;
+  const redirectUri = clientConfig.data?.redirectUri ?? "";
+  const loadingConfig = clientConfig.isLoading;
+  const formError = error ?? clientConfig.error;
+  const trimmedClientId = clientId.trim();
+  const trimmedClientSecret = clientSecret.trim();
+  const saveDisabled = loadingConfig || (!configured && (!trimmedClientId || !trimmedClientSecret));
+
+  function toggleFeature(feature: string) {
+    setFeatures((current) => current.includes(feature) ? current.filter((entry) => entry !== feature) : [...current, feature]);
+  }
+
+  async function copyRedirectUri() {
+    if (!redirectUri) return;
+    if (await copyTextToClipboard(redirectUri)) setCopiedRedirectUri(true);
+  }
+
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center bg-slate-950/45 px-4 py-6" onClick={onClose}>
       <div
-        className="w-full max-w-md rounded-[28px] border border-gray-200 bg-white p-6 shadow-[0_24px_80px_-32px_rgba(15,23,42,0.45)]"
+        className="max-h-[calc(100vh-3rem)] w-full max-w-lg overflow-y-auto rounded-[28px] border border-gray-200 bg-white p-6 shadow-[0_24px_80px_-32px_rgba(15,23,42,0.45)]"
         onClick={(event) => event.stopPropagation()}
       >
         <h2 className="text-[18px] font-semibold tracking-[-0.02em] text-gray-950">Set up Google Workspace</h2>
@@ -262,12 +373,69 @@ function GoogleWorkspaceDialog({
         </p>
 
         <div className="mt-5 space-y-4">
+          <div className="rounded-2xl border border-gray-100 bg-gray-50 p-4">
+            <p className="text-[13px] font-semibold text-gray-900">How to set it up</p>
+            <ol className="mt-2 list-decimal space-y-2 pl-4 text-[12px] leading-5 text-gray-600">
+              <li>
+                Create an OAuth client in Google Cloud Console (APIs &amp; Services → Credentials → Create credentials → OAuth client ID → Web application).{" "}
+                <a href="https://console.cloud.google.com/apis/credentials" target="_blank" rel="noopener" className="font-medium text-gray-900 underline decoration-gray-300 underline-offset-4">
+                  Open Google Cloud Console
+                </a>
+              </li>
+              <li>
+                <p>Add this authorized redirect URI:</p>
+                <div className="mt-1 flex items-center gap-2 rounded-xl border border-gray-200 bg-white p-2">
+                  <p data-google-redirect-uri className="min-w-0 flex-1 break-all font-mono text-[11px] leading-5 text-gray-800">
+                    {redirectUri || "Loading redirect URI…"}
+                  </p>
+                  <DenButton variant="secondary" size="sm" data-testid="copy-redirect-uri" onClick={copyRedirectUri} disabled={!redirectUri}>
+                    {copiedRedirectUri ? "Copied" : "Copy"}
+                  </DenButton>
+                </div>
+              </li>
+              <li>
+                Enable the Google APIs for the permissions you pick (Gmail, Calendar, Drive).{" "}
+                <a href="https://console.cloud.google.com/apis/library" target="_blank" rel="noopener" className="font-medium text-gray-900 underline decoration-gray-300 underline-offset-4">
+                  Open API library
+                </a>
+              </li>
+              <li>Paste the client ID and secret below.</li>
+            </ol>
+          </div>
+          <div className="rounded-2xl border border-gray-100 bg-gray-50 p-4">
+            <p className="text-[13px] font-semibold text-gray-900">Permissions</p>
+            <p className="mt-1 text-[12px] leading-5 text-gray-500">
+              Pick what your team&apos;s AI can do across Calendar, Gmail, and Drive. Signing in always shares the member&apos;s name and email.
+            </p>
+            <div className="mt-3 space-y-3">
+              {GOOGLE_WORKSPACE_PERMISSION_GROUPS.map((group) => (
+                <div key={group.name}>
+                  <p className="mb-1 text-[11px] font-semibold uppercase tracking-[0.12em] text-gray-400">{group.name}</p>
+                  <div className="space-y-2">
+                    {group.permissions.map((permission) => (
+                      <label key={permission.key} className="flex items-center gap-2 text-[13px] text-gray-700">
+                        <input
+                          type="checkbox"
+                          data-feature={permission.key}
+                          className="h-4 w-4 rounded border-gray-300 text-gray-900"
+                          checked={features.includes(permission.key)}
+                          disabled={loadingConfig}
+                          onChange={() => toggleFeature(permission.key)}
+                        />
+                        <span>{permission.label}</span>
+                      </label>
+                    ))}
+                  </div>
+                </div>
+              ))}
+            </div>
+          </div>
           <div>
             <label className="mb-1.5 block text-[12px] font-medium text-gray-700">Client ID</label>
             <DenInput
               value={clientId}
               onChange={(event) => setClientId(event.target.value)}
-              placeholder="1234567890-abc.apps.googleusercontent.com"
+              placeholder={configured ? "Saved client ID kept if left blank" : "1234567890-abc.apps.googleusercontent.com"}
             />
           </div>
           <div>
@@ -276,13 +444,13 @@ function GoogleWorkspaceDialog({
               type="password"
               value={clientSecret}
               onChange={(event) => setClientSecret(event.target.value)}
-              placeholder="GOCSPX-…"
+              placeholder={configured ? "Saved client secret kept if left blank" : "GOCSPX-…"}
             />
           </div>
         </div>
 
-        {error ? (
-          <p className="mt-3 text-[13px] text-red-600">{error instanceof Error ? error.message : "Failed to save the OAuth client."}</p>
+        {formError ? (
+          <p className="mt-3 text-[13px] text-red-600">{formError instanceof Error ? formError.message : "Failed to save the OAuth client."}</p>
         ) : null}
 
         <div className="mt-6 flex flex-col-reverse gap-2 sm:flex-row sm:justify-end">
@@ -292,8 +460,12 @@ function GoogleWorkspaceDialog({
           <DenButton
             variant="primary"
             loading={submitting}
-            disabled={!clientId.trim() || !clientSecret.trim()}
-            onClick={() => onSubmit({ clientId: clientId.trim(), clientSecret: clientSecret.trim() })}
+            disabled={saveDisabled}
+            onClick={() => onSubmit({
+              ...(trimmedClientId ? { clientId: trimmedClientId } : {}),
+              ...(trimmedClientSecret ? { clientSecret: trimmedClientSecret } : {}),
+              features,
+            })}
           >
             Save
           </DenButton>
@@ -341,7 +513,7 @@ function ConnectionRow({
             {isPerMember ? (
               <span className="inline-flex items-center gap-1 rounded-full bg-gray-900 px-2 py-0.5 text-[11px] font-medium text-white">
                 <Users className="h-3 w-3" />
-                Per-member accounts
+                Individual accounts
               </span>
             ) : connection.connected ? (
               <span className="inline-flex items-center gap-1 rounded-full bg-emerald-50 px-2 py-0.5 text-[11px] font-medium text-emerald-700">
@@ -404,14 +576,19 @@ function AddConnectionDialog({
   submitting: boolean;
   error: unknown;
   onClose: () => void;
-  onSubmit: (input: CreateMcpConnectionInput) => void;
+  onSubmit: (input: CreateMcpConnectionInput) => Promise<CreatedMcpConnection>;
 }) {
   const { orgContext } = useOrgDashboard();
   const [name, setName] = useState(preset?.displayName ?? "");
   const [url, setUrl] = useState(preset?.url ?? "");
   const [authType, setAuthType] = useState<ExternalMcpAuthType>(preset?.authType ?? "oauth");
-  const [credentialMode, setCredentialMode] = useState<ExternalMcpCredentialMode>("shared");
+  const [credentialMode, setCredentialMode] = useState<ExternalMcpCredentialMode>("per_member");
   const [apiKey, setApiKey] = useState("");
+  const [showOAuthClient, setShowOAuthClient] = useState(Boolean(preset?.requiresOAuthClient));
+  const [oauthClientId, setOAuthClientId] = useState("");
+  const [oauthClientSecret, setOAuthClientSecret] = useState("");
+  const [oauthCallback, setOAuthCallback] = useState<string | null>(null);
+  const [copiedCallback, setCopiedCallback] = useState(false);
   const [accessMode, setAccessMode] = useState<"everyone" | "teams" | "people">("everyone");
   const [selectedTeamIds, setSelectedTeamIds] = useState<string[]>([]);
   const [selectedMemberIds, setSelectedMemberIds] = useState<string[]>([]);
@@ -421,8 +598,13 @@ function AddConnectionDialog({
     setName(preset?.displayName ?? "");
     setUrl(preset?.url ?? "");
     setAuthType(preset?.authType ?? "oauth");
-    setCredentialMode("shared");
+    setCredentialMode("per_member");
     setApiKey("");
+    setShowOAuthClient(Boolean(preset?.requiresOAuthClient));
+    setOAuthClientId("");
+    setOAuthClientSecret("");
+    setOAuthCallback(null);
+    setCopiedCallback(false);
     setAccessMode("everyone");
     setSelectedTeamIds([]);
     setSelectedMemberIds([]);
@@ -438,14 +620,45 @@ function AddConnectionDialog({
     return list.includes(id) ? list.filter((entry) => entry !== id) : [...list, id];
   }
 
-  if (!open) {
-    return null;
-  }
-
+  const showOAuthClientFields = authType === "oauth" && (Boolean(preset?.requiresOAuthClient) || showOAuthClient);
+  const oauthClientRequired = authType === "oauth" && Boolean(preset?.requiresOAuthClient);
   const access: McpConnectionAccessInput = accessMode === "everyone"
     ? { orgWide: true, memberIds: [], teamIds: [] }
     : { orgWide: false, memberIds: accessMode === "people" ? selectedMemberIds : [], teamIds: accessMode === "teams" ? selectedTeamIds : [] };
   const accessIncomplete = accessMode === "teams" ? selectedTeamIds.length === 0 : accessMode === "people" ? selectedMemberIds.length === 0 : false;
+
+  async function submit() {
+    const trimmedClientId = oauthClientId.trim();
+    const trimmedClientSecret = oauthClientSecret.trim();
+    const input: CreateMcpConnectionInput = {
+      name: name.trim(),
+      url: url.trim(),
+      authType,
+      credentialMode: authType === "oauth" ? credentialMode : "shared",
+      apiKey: authType === "apikey" ? apiKey.trim() : undefined,
+      oauthClient: showOAuthClientFields && trimmedClientId
+        ? {
+          clientId: trimmedClientId,
+          ...(trimmedClientSecret ? { clientSecret: trimmedClientSecret } : {}),
+        }
+        : undefined,
+      access,
+    };
+    const created = await onSubmit(input);
+    if (input.oauthClient && created.links?.oauthCallback) {
+      setOAuthCallback(created.links.oauthCallback);
+      setCopiedCallback(false);
+    }
+  }
+
+  async function copyOAuthCallback() {
+    if (!oauthCallback) return;
+    if (await copyTextToClipboard(oauthCallback)) setCopiedCallback(true);
+  }
+
+  if (!open) {
+    return null;
+  }
 
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center bg-slate-950/45 px-4 py-6" onClick={onClose}>
@@ -453,6 +666,26 @@ function AddConnectionDialog({
         className="w-full max-w-md rounded-[28px] border border-gray-200 bg-white p-6 shadow-[0_24px_80px_-32px_rgba(15,23,42,0.45)]"
         onClick={(event) => event.stopPropagation()}
       >
+        {oauthCallback ? (
+          <>
+            <h2 className="text-[18px] font-semibold tracking-[-0.02em] text-gray-950">Almost done — add this redirect URL to your app:</h2>
+            <p className="mt-2 text-[13px] leading-6 text-gray-600">
+              Copy this into the OAuth redirect URLs for your pre-registered app before teammates connect.
+            </p>
+            <div className="mt-4 rounded-2xl border border-gray-200 bg-gray-50 p-3">
+              <p className="break-all font-mono text-[12px] leading-5 text-gray-800">{oauthCallback}</p>
+            </div>
+            <div className="mt-6 flex flex-col-reverse gap-2 sm:flex-row sm:justify-end">
+              <DenButton variant="secondary" onClick={copyOAuthCallback}>
+                {copiedCallback ? "Copied" : "Copy"}
+              </DenButton>
+              <DenButton variant="primary" onClick={onClose}>
+                Done
+              </DenButton>
+            </div>
+          </>
+        ) : (
+          <>
         <h2 className="text-[18px] font-semibold tracking-[-0.02em] text-gray-950">
           {preset ? `Add ${preset.displayName}` : "Add a custom MCP server"}
         </h2>
@@ -482,7 +715,10 @@ function AddConnectionDialog({
                   <button
                     key={option}
                     type="button"
-                    onClick={() => setAuthType(option)}
+                    onClick={() => {
+                      setAuthType(option);
+                      if (option !== "oauth") setShowOAuthClient(false);
+                    }}
                     className={`rounded-full border px-3 py-1.5 text-[12px] font-medium transition ${
                       authType === option
                         ? "border-gray-900 bg-gray-900 text-white"
@@ -502,19 +738,48 @@ function AddConnectionDialog({
             </div>
           ) : null}
 
+          {authType === "oauth" && !preset?.requiresOAuthClient && !showOAuthClient ? (
+            <button
+              type="button"
+              onClick={() => setShowOAuthClient(true)}
+              className="text-left text-[12px] font-medium text-gray-500 underline decoration-gray-300 underline-offset-4 transition hover:text-gray-900"
+            >
+              This server needs a pre-registered OAuth app
+            </button>
+          ) : null}
+
+          {showOAuthClientFields ? (
+            <div className="rounded-2xl border border-gray-100 bg-gray-50 p-4">
+              <p className="text-[13px] font-semibold text-gray-900">OAuth app</p>
+              <p className="mt-1 text-[12px] leading-5 text-gray-500">
+                Create an app for your workspace, then paste its OAuth client here. Each person connects their own account with it — sign-ins stay in your org&apos;s cloud.
+              </p>
+              <div className="mt-3 space-y-3">
+                <div>
+                  <label className="mb-1.5 block text-[12px] font-medium text-gray-700">Client ID</label>
+                  <DenInput
+                    value={oauthClientId}
+                    onChange={(event) => setOAuthClientId(event.target.value)}
+                    placeholder="1234567890.1234567890123"
+                  />
+                </div>
+                <div>
+                  <label className="mb-1.5 block text-[12px] font-medium text-gray-700">Client secret</label>
+                  <DenInput
+                    type="password"
+                    value={oauthClientSecret}
+                    onChange={(event) => setOAuthClientSecret(event.target.value)}
+                    placeholder="Client secret"
+                  />
+                </div>
+              </div>
+            </div>
+          ) : null}
+
           {authType === "oauth" ? (
             <div>
-              <label className="mb-1.5 block text-[12px] font-medium text-gray-700">Account</label>
+              <label className="mb-1.5 block text-[12px] font-medium text-gray-700">Whose account does the AI use?</label>
               <div className="flex gap-2">
-                <button
-                  type="button"
-                  onClick={() => setCredentialMode("shared")}
-                  className={`rounded-full border px-3 py-1.5 text-[12px] font-medium transition ${
-                    credentialMode === "shared" ? "border-gray-900 bg-gray-900 text-white" : "border-gray-200 text-gray-600 hover:border-gray-300"
-                  }`}
-                >
-                  One shared account
-                </button>
                 <button
                   type="button"
                   onClick={() => setCredentialMode("per_member")}
@@ -522,13 +787,22 @@ function AddConnectionDialog({
                     credentialMode === "per_member" ? "border-gray-900 bg-gray-900 text-white" : "border-gray-200 text-gray-600 hover:border-gray-300"
                   }`}
                 >
-                  Each person connects their own
+                  Individual accounts
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setCredentialMode("shared")}
+                  className={`rounded-full border px-3 py-1.5 text-[12px] font-medium transition ${
+                    credentialMode === "shared" ? "border-gray-900 bg-gray-900 text-white" : "border-gray-200 text-gray-600 hover:border-gray-300"
+                  }`}
+                >
+                  One org account
                 </button>
               </div>
               <p className="mt-1.5 text-[12px] leading-5 text-gray-500">
-                {credentialMode === "shared"
-                  ? "You'll authorize a single account now; everyone granted access acts as it."
-                  : "You publish the connection; each person authorizes their own account from Your Connections and acts as themselves."}
+                {credentialMode === "per_member"
+                  ? "Each person signs in with their own account from Your Connections. Their AI acts as them, with their permissions."
+                  : "You sign in once with a single account — everyone granted access acts as it. Good for bot or service accounts."}
               </p>
             </div>
           ) : null}
@@ -605,21 +879,14 @@ function AddConnectionDialog({
           <DenButton
             variant="primary"
             loading={submitting}
-            disabled={!name.trim() || !url.trim() || (authType === "apikey" && !apiKey.trim()) || accessIncomplete}
-            onClick={() =>
-              onSubmit({
-                name: name.trim(),
-                url: url.trim(),
-                authType,
-                credentialMode: authType === "oauth" ? credentialMode : "shared",
-                apiKey: authType === "apikey" ? apiKey.trim() : undefined,
-                access,
-              })
-            }
+            disabled={!name.trim() || !url.trim() || (authType === "apikey" && !apiKey.trim()) || (oauthClientRequired && !oauthClientId.trim()) || accessIncomplete}
+            onClick={() => void submit()}
           >
             Add connection
           </DenButton>
         </div>
+          </>
+        )}
       </div>
     </div>
   );
