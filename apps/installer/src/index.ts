@@ -8,6 +8,7 @@ const rawArgs = Bun.argv.slice(2)
 const args = new Set(rawArgs)
 const headless = args.has("--headless") || process.env.OPENWORK_INSTALLER_HEADLESS === "1"
 const dryRun = args.has("--dry-run") || process.env.OPENWORK_INSTALLER_DRY_RUN === "1"
+const smokeExitMs = Number.parseInt(process.env.OPENWORK_INSTALLER_SMOKE_EXIT_MS ?? "", 10)
 
 type ReadyServer = {
   url: string
@@ -229,16 +230,32 @@ if (process.env.OPENWORK_INSTALLER_UI === "manual") {
 } else {
 try {
   const { Webview, SizeHint } = await import("webview-bun")
+  const { lib } = await import("webview-bun/src/ffi")
   const webview = new Webview(false, { width: 420, height: 440, hint: SizeHint.FIXED })
   webview.title = "OpenWork Installer"
-  // The page's Exit button calls this bound global; terminating the run loop
-  // is the only clean way to close the window from page JS.
-  webview.bind("openworkInstallerExit", () => webview.destroy())
+  // The page's Exit button calls this bound global. Only terminate the native
+  // run loop here — run() destroys the webview after the loop exits.
+  // Destroying inside the callback frees the executing FFI trampoline and
+  // tears down the webview mid-dispatch (use-after-free; segfaults on
+  // Windows, where WebView2 dispatches bindings from the Win32 message pump).
+  webview.bind("openworkInstallerExit", () => {
+    const handle = webview.unsafeHandle
+    if (handle) lib.symbols.webview_terminate(handle)
+  })
+  if (Number.isFinite(smokeExitMs) && smokeExitMs > 0) {
+    // Automated smoke: drive the exact production exit path (page JS -> bound
+    // FFI callback) without a human click.
+    webview.init(`setTimeout(() => { if (window.openworkInstallerExit) window.openworkInstallerExit(); }, ${smokeExitMs})`)
+  }
   webview.navigate(ready.url)
   webview.run()
   await exitWhenInstallSettles()
 } catch (error) {
   // Native webview unavailable (e.g. no WebkitGTK): same UI in the browser.
+  if (Number.isFinite(smokeExitMs) && smokeExitMs > 0) {
+    console.error("[openwork-installer] smoke mode: native webview unavailable")
+    process.exit(3)
+  }
   console.warn(`[openwork-installer] native window unavailable (${error instanceof Error ? error.message : String(error)}); opening browser UI`)
   openInBrowser(ready.url)
   uiServer.onExit(() => void exitWhenInstallSettles())
