@@ -15,6 +15,7 @@ import {
   createDenClient,
   DenApiError,
   ensureDenActiveOrganization,
+  denOriginComparisonKey,
   readDenBootstrapConfig,
   readDenSettings,
   setDenBootstrapConfig,
@@ -80,6 +81,7 @@ export function DenAuthProvider({ children }: DenAuthProviderProps) {
     try {
       const nextUser = await createDenClient({
         baseUrl: settings.baseUrl,
+        apiBaseUrl: settings.apiBaseUrl,
         token,
       }).getSession();
 
@@ -131,9 +133,10 @@ export function DenAuthProvider({ children }: DenAuthProviderProps) {
   // relaunch never re-exchanges it. Persisting is best-effort: a failure here
   // must NOT be reported as an auth failure, since the user is already signed
   // in at this point.
-  const clearConsumedBootstrapHandoff = useCallback((bootstrap: DenBootstrapConfig, denBaseUrl: string) => {
+  const clearConsumedBootstrapHandoff = useCallback((bootstrap: DenBootstrapConfig, denBaseUrl: string, apiBaseUrl: string) => {
     void setDenBootstrapConfig({
       baseUrl: denBaseUrl,
+      apiBaseUrl,
       requireSignin: bootstrap.requireSignin,
       ...(bootstrap.claimLinks ? { claimLinks: bootstrap.claimLinks } : {}),
       handoff: null,
@@ -151,13 +154,14 @@ export function DenAuthProvider({ children }: DenAuthProviderProps) {
     // Already signed in: just drop the now-unused grant from disk.
     if (readDenSettings().authToken?.trim()) {
       handledGrantsRef.current.add(handoff.grant);
-      clearConsumedBootstrapHandoff(bootstrap, bootstrap.baseUrl);
+      clearConsumedBootstrapHandoff(bootstrap, bootstrap.baseUrl, bootstrap.apiBaseUrl);
       return;
     }
 
     handledGrantsRef.current.add(handoff.grant);
     const client = createDenClient({
       baseUrl: handoff.denBaseUrl,
+      apiBaseUrl: bootstrap.apiBaseUrl,
     });
 
     void exchangeHandoffAndSignIn(handoff.grant, {
@@ -170,7 +174,7 @@ export function DenAuthProvider({ children }: DenAuthProviderProps) {
         return;
       }
       // Best-effort cleanup; not part of the auth success/failure path.
-      clearConsumedBootstrapHandoff(bootstrap, handoff.denBaseUrl);
+      clearConsumedBootstrapHandoff(bootstrap, handoff.denBaseUrl, result.apiBaseUrl);
     });
   }, [clearConsumedBootstrapHandoff]);
 
@@ -194,9 +198,21 @@ export function DenAuthProvider({ children }: DenAuthProviderProps) {
         if (!parsed || handledGrantsRef.current.has(parsed.grant)) continue;
         handledGrantsRef.current.add(parsed.grant);
 
+        // Keep the configured apiBaseUrl when the deep link targets the
+        // control plane we are already pointed at; deriving from the link's
+        // base URL alone breaks deployments where the advertised proxy path
+        // does not match how this app actually reaches the Den API.
+        const settings = readDenSettings();
+        const targetKey = denOriginComparisonKey(parsed.denBaseUrl);
+        const sameControlPlane =
+          denOriginComparisonKey(settings.baseUrl) === targetKey ||
+          denOriginComparisonKey(settings.apiBaseUrl ?? null) === targetKey;
         const client = createDenClient({
           baseUrl: parsed.denBaseUrl,
+          apiBaseUrl: sameControlPlane ? settings.apiBaseUrl ?? null : null,
         });
+        // Persist the API base URL the exchange actually succeeds against; the
+        // helper reads it from the client (#1808).
         void exchangeHandoffAndSignIn(parsed.grant, {
           baseUrl: parsed.denBaseUrl,
           client,

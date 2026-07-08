@@ -14,6 +14,8 @@ import {
   DEFAULT_DEN_BASE_URL,
   readDenBootstrapConfig,
   readDenSettings,
+  STORAGE_API_BASE_URL,
+  STORAGE_BASE_URL,
 } from "@/app/lib/den";
 import {
   describeCloudMcpTarget,
@@ -48,6 +50,16 @@ import {
 type SettingsTone = ComponentProps<typeof SettingsStatusBadge>["tone"];
 
 const DESKTOP_BOOTSTRAP_PATH_HINT = "~/.config/openwork/desktop-bootstrap.json";
+
+function readEndpointStorageValue(key: string): string | null {
+  if (typeof window === "undefined") return null;
+
+  try {
+    return window.localStorage.getItem(key);
+  } catch {
+    return null;
+  }
+}
 
 function sourceBadgeLabel(source: DenEndpointSource): string {
   switch (source) {
@@ -117,12 +129,12 @@ function ServerEndpointsCard(props: { cloudMcpUrl: string | null }) {
   const effectiveApiBaseUrl = settings.apiBaseUrl ?? DEFAULT_DEN_API_BASE_URL;
   const bootstrap = readDenBootstrapConfig();
   const organizationServer = describeDenEndpointSource({
-    storedValue: null,
+    storedValue: readEndpointStorageValue(STORAGE_BASE_URL),
     bootstrapValue: bootstrapValueWhenNotDefault(bootstrap.baseUrl, DEFAULT_DEN_BASE_URL),
     buildDefault: DEFAULT_DEN_BASE_URL,
   });
   const apiEndpoint = describeDenEndpointSource({
-    storedValue: null,
+    storedValue: readEndpointStorageValue(STORAGE_API_BASE_URL),
     bootstrapValue: bootstrapValueWhenNotDefault(bootstrap.apiBaseUrl, DEFAULT_DEN_API_BASE_URL),
     buildDefault: DEFAULT_DEN_API_BASE_URL,
   });

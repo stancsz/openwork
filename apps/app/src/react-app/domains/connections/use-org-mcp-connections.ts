@@ -111,7 +111,7 @@ export function useOrgMcpConnections() {
     setLoading(true);
     setError(null);
     try {
-      const client = createDenClient({ baseUrl: settings.baseUrl, token });
+      const client = createDenClient({ baseUrl: settings.baseUrl, apiBaseUrl: settings.apiBaseUrl, token });
       const result = await client.listMcpConnections(orgId, "usable");
       setConnections(result);
     } catch (fetchError) {
@@ -129,7 +129,7 @@ export function useOrgMcpConnections() {
 
     setConnectingId(connectionId);
     try {
-      const client = createDenClient({ baseUrl: settings.baseUrl, token });
+      const client = createDenClient({ baseUrl: settings.baseUrl, apiBaseUrl: settings.apiBaseUrl, token });
       const result = await client.startMcpConnectionConnect(orgId, connectionId);
       if (result.status === "connected") {
         await refresh();
@@ -162,6 +162,7 @@ export function useOrgMcpConnections() {
         try {
           const pollClient = createDenClient({
             baseUrl: refreshedSettings.baseUrl,
+            apiBaseUrl: refreshedSettings.apiBaseUrl,
             token: refreshedToken,
           });
           const polled = await pollClient.listMcpConnections(refreshedOrgId, "usable");
@@ -192,7 +193,7 @@ export function useOrgMcpConnections() {
     setDisconnectingId(connectionId);
     setError(null);
     try {
-      const client = createDenClient({ baseUrl: settings.baseUrl, token });
+      const client = createDenClient({ baseUrl: settings.baseUrl, apiBaseUrl: settings.apiBaseUrl, token });
       await client.disconnectOauthProviderAccount(orgId, connectionId);
       await refresh();
     } catch (disconnectError) {

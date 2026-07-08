@@ -16,7 +16,11 @@ export type HandoffActiveOrg = {
 export type ExchangeHandoffOptions = {
   /** Den base URL to exchange against (and persist on success). */
   baseUrl: string;
-  /** Pre-built client to reuse. When omitted, a default client for `baseUrl` is created. */
+  /**
+   * Pre-built client to reuse. Callers that need to preserve a specific
+   * apiBaseUrl (e.g. same-control-plane deployments) build their own client and
+   * pass it here. When omitted, a default client for `baseUrl` is created.
+   */
   client?: DenClient;
   /** Optional active org to select on sign-in (bootstrap prepares this). */
   activeOrg?: HandoffActiveOrg | null;
@@ -25,7 +29,7 @@ export type ExchangeHandoffOptions = {
 };
 
 export type ExchangeHandoffResult =
-  | { ok: true; exchange: DenDesktopHandoffExchange; baseUrl: string }
+  | { ok: true; exchange: DenDesktopHandoffExchange; baseUrl: string; apiBaseUrl: string }
   | { ok: false; error: string };
 
 /**
@@ -50,8 +54,10 @@ export async function exchangeHandoffAndSignIn(
       throw new Error(fallback);
     }
 
+    const apiBaseUrl = client.baseUrls.apiBaseUrl;
     writeDenSettings({
       baseUrl: options.baseUrl,
+      apiBaseUrl,
       authToken: exchange.token,
       activeOrgId: options.activeOrg?.id ?? null,
       activeOrgSlug: options.activeOrg?.slug ?? null,
@@ -66,7 +72,7 @@ export async function exchangeHandoffAndSignIn(
       email: exchange.user?.email ?? null,
     });
 
-    return { ok: true, exchange, baseUrl: options.baseUrl };
+    return { ok: true, exchange, baseUrl: options.baseUrl, apiBaseUrl };
   } catch (error) {
     const message = error instanceof Error ? error.message : fallback;
     dispatchDenSessionUpdated({ status: "error", message });

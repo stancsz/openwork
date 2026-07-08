@@ -163,7 +163,7 @@ export const MCP_QUICK_CONNECT: McpDirectoryInfo[] = [
       try {
         return `${getDenMcpUrl()}/agent`;
       } catch {
-        return "https://app.openworklabs.com/api/den/mcp/agent";
+        return "https://api.openworklabs.com/mcp/agent";
       }
     },
     type: "remote",
@@ -182,7 +182,7 @@ export const MCP_QUICK_CONNECT: McpDirectoryInfo[] = [
       try {
         return `${getDenMcpUrl()}/admin`;
       } catch {
-        return "https://app.openworklabs.com/api/den/mcp/admin";
+        return "https://api.openworklabs.com/mcp/admin";
       }
     },
     type: "remote",

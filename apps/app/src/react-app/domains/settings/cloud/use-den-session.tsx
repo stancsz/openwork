@@ -10,6 +10,7 @@ import {
   DenApiError,
   ensureDenActiveOrganization,
   initializeDenBootstrapConfig,
+  denOriginComparisonKey,
   normalizeDenBaseUrl,
   readDenSettings,
   resolveDenBaseUrls,
@@ -123,9 +124,14 @@ export function useDenSession({
   }, [authError, isSignedIn, sessionBusy]);
 
   const syncCurrentDenSettings = React.useCallback(() => {
-    const resolved = resolveDenBaseUrls(baseUrl);
+    const currentSettings = readDenSettings();
+    const resolved = resolveDenBaseUrls({
+      baseUrl,
+      apiBaseUrl: currentSettings.apiBaseUrl,
+    });
     writeDenSettings({
       baseUrl: resolved.baseUrl,
+      apiBaseUrl: resolved.apiBaseUrl,
       authToken: authToken || null,
       activeOrgId: activeOrgId || null,
       activeOrgSlug: activeOrg?.slug ?? null,
@@ -283,6 +289,7 @@ export function useDenSession({
       writeDenSettings(
         {
           baseUrl: resolved.baseUrl,
+          apiBaseUrl: resolved.apiBaseUrl,
           authToken: null,
           activeOrgId: null,
           activeOrgSlug: null,
@@ -448,8 +455,20 @@ export function useDenSession({
     setStatusMessage(t("den.signing_in"));
 
     try {
-      const exchangeClient = createDenClient({ baseUrl: nextBaseUrl });
-      // The helper exchanges, persists, and dispatches the success/error session events.
+      // When the pasted link targets the control plane we are already
+      // configured for, keep the configured apiBaseUrl. Deriving it from the
+      // link's base URL alone breaks deployments where the advertised proxy
+      // path does not match how this app actually reaches the Den API.
+      const settings = readDenSettings();
+      const targetKey = denOriginComparisonKey(nextBaseUrl);
+      const configuredApiBaseUrl =
+        denOriginComparisonKey(settings.baseUrl) === targetKey ||
+        denOriginComparisonKey(settings.apiBaseUrl ?? null) === targetKey
+          ? settings.apiBaseUrl ?? null
+          : null;
+      const exchangeClient = createDenClient({ baseUrl: nextBaseUrl, apiBaseUrl: configuredApiBaseUrl });
+      // The helper exchanges, persists (incl. the working apiBaseUrl, #1808), and
+      // dispatches the success/error session events.
       const result = await exchangeHandoffAndSignIn(parsed.grant, {
         baseUrl: nextBaseUrl,
         client: exchangeClient,

@@ -7,6 +7,11 @@ export function describeDenEndpointSource(input: {
   bootstrapValue: string | null;
   buildDefault: string;
 }): { effective: string; source: DenEndpointSource } {
+  const stored = normalizeDenBaseUrl(input.storedValue);
+  if (stored) {
+    return { effective: stored, source: "custom" };
+  }
+
   const bootstrap = normalizeDenBaseUrl(input.bootstrapValue);
   if (bootstrap) {
     return { effective: bootstrap, source: "bootstrap" };

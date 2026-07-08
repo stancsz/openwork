@@ -161,7 +161,7 @@ function DenAuthControlActions() {
       if (!grant?.trim()) return { ok: false, error: "grant is required" };
       const settings = readDenSettings();
       const targetBaseUrl = argBaseUrl?.trim() || settings.baseUrl;
-      const client = createDenClient({ baseUrl: targetBaseUrl });
+      const client = createDenClient({ baseUrl: targetBaseUrl, apiBaseUrl: settings.apiBaseUrl });
       const result = await exchangeHandoffAndSignIn(grant.trim(), {
         baseUrl: targetBaseUrl,
         client,

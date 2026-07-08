@@ -41,6 +41,7 @@ export function CloudSessionProvider({ children }: CloudSessionProviderProps) {
   const initial = React.useMemo(() => readDenSettings(), []);
 
   const [baseUrl, setBaseUrl] = React.useState(() => initial.baseUrl || DEFAULT_DEN_BASE_URL);
+  const [apiBaseUrl, setApiBaseUrl] = React.useState(() => initial.apiBaseUrl || "");
   const [authToken, setAuthToken] = React.useState(initial.authToken?.trim() || "");
   const [isSignedIn, setIsSignedIn] = React.useState(false);
   const [user, setUser] = React.useState<DenUser | null>(null);
@@ -64,7 +65,7 @@ export function CloudSessionProvider({ children }: CloudSessionProviderProps) {
     if (typeof window === "undefined") return;
 
     const handleSettingsChanged = () => {
-      setBaseUrl(readDenSettings().baseUrl || DEFAULT_DEN_BASE_URL);
+      setApiBaseUrl(readDenSettings().apiBaseUrl || "");
     };
 
     window.addEventListener(denSettingsChangedEvent, handleSettingsChanged);
@@ -72,8 +73,8 @@ export function CloudSessionProvider({ children }: CloudSessionProviderProps) {
   }, []);
 
   const client = React.useMemo(
-    () => createDenClient({ baseUrl, token: authToken }),
-    [authToken, baseUrl],
+    () => createDenClient({ baseUrl, apiBaseUrl, token: authToken }),
+    [apiBaseUrl, authToken, baseUrl],
   );
 
   const value = React.useMemo<CloudSessionContextValue>(
