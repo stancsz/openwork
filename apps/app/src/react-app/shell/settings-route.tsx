@@ -2139,6 +2139,7 @@ function SettingsRouteContent(props: SettingsSurfaceProps = {}) {
                 configSlotForBuiltIn={extensionController.configSlotForEntry}
                 isBuiltInConnected={extensionController.isConnected}
                 extensionItems={extensionItemsForExtensions}
+                orgMcpConnections={orgMcpConnections.connections}
                 orgMcpConnectingId={orgMcpConnections.connectingId}
                 orgMcpDisconnectingId={orgMcpConnections.disconnectingId}
                 onConnectOrgMcp={(connectionId) => {
@@ -2182,6 +2183,7 @@ function SettingsRouteContent(props: SettingsSurfaceProps = {}) {
             configSlotForBuiltIn={extensionController.configSlotForEntry}
             isBuiltInConnected={extensionController.isConnected}
             extensionItems={extensionItemsForExtensions}
+            orgMcpConnections={orgMcpConnections.connections}
             orgMcpConnectingId={orgMcpConnections.connectingId}
             orgMcpDisconnectingId={orgMcpConnections.disconnectingId}
             onConnectOrgMcp={(connectionId) => {
