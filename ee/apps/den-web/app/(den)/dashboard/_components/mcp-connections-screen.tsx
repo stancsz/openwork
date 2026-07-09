@@ -775,6 +775,7 @@ function GoogleWorkspaceDialog({
   const [clientSecret, setClientSecret] = useState("");
   const [features, setFeatures] = useState<string[]>([]);
   const [copiedRedirectUri, setCopiedRedirectUri] = useState(false);
+  const [replacingCredentials, setReplacingCredentials] = useState(false);
   const featuresPrefilled = useRef(false);
 
   useEffect(() => {
@@ -783,6 +784,7 @@ function GoogleWorkspaceDialog({
     setClientSecret("");
     setFeatures(GOOGLE_WORKSPACE_DEFAULT_FEATURES);
     setCopiedRedirectUri(false);
+    setReplacingCredentials(false);
     featuresPrefilled.current = false;
   }, [open]);
 
@@ -797,12 +799,14 @@ function GoogleWorkspaceDialog({
   }
 
   const configured = clientConfig.data?.configured ?? false;
+  const savedClientId = clientConfig.data?.clientId;
   const redirectUri = clientConfig.data?.redirectUri ?? "";
   const loadingConfig = clientConfig.isLoading;
   const formError = error ?? clientConfig.error;
   const trimmedClientId = clientId.trim();
   const trimmedClientSecret = clientSecret.trim();
-  const saveDisabled = loadingConfig || (!configured && (!trimmedClientId || !trimmedClientSecret));
+  const showCredentialFields = !loadingConfig && (!configured || replacingCredentials);
+  const saveDisabled = loadingConfig || (showCredentialFields && (!trimmedClientId || !trimmedClientSecret));
 
   function toggleFeature(feature: string) {
     setFeatures((current) => current.includes(feature) ? current.filter((entry) => entry !== feature) : [...current, feature]);
@@ -813,16 +817,23 @@ function GoogleWorkspaceDialog({
     if (await copyTextToClipboard(redirectUri)) setCopiedRedirectUri(true);
   }
 
+  function startReplacingCredentials() {
+    setClientId(savedClientId ?? "");
+    setClientSecret("");
+    setReplacingCredentials(true);
+  }
+
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center bg-slate-950/45 px-4 py-6" onClick={onClose}>
       <div
         className="max-h-[calc(100vh-3rem)] w-full max-w-lg overflow-y-auto rounded-[28px] border border-gray-200 bg-white p-6 shadow-[0_24px_80px_-32px_rgba(15,23,42,0.45)]"
         onClick={(event) => event.stopPropagation()}
       >
-        <h2 className="text-[18px] font-semibold tracking-[-0.02em] text-gray-950">Set up Google Workspace</h2>
+        <h2 className="text-[18px] font-semibold tracking-[-0.02em] text-gray-950">
+          {configured ? "Update Google Workspace" : "Set up Google Workspace"}
+        </h2>
         <p className="mt-1 text-[13px] leading-6 text-gray-600">
-          Paste the OAuth client from your company&apos;s Google Cloud project. Members then connect their own
-          Google account from Your Connections — sign-ins stay in your org&apos;s cloud.
+          Use one Google OAuth web app for your org. Members then connect their own Google account from Your Connections — sign-ins stay in your org&apos;s cloud.
         </p>
 
         <div className="mt-5 space-y-4">
@@ -830,13 +841,13 @@ function GoogleWorkspaceDialog({
             <p className="text-[13px] font-semibold text-gray-900">How to set it up</p>
             <ol className="mt-2 list-decimal space-y-2 pl-4 text-[12px] leading-5 text-gray-600">
               <li>
-                Create an OAuth client in Google Cloud Console (APIs &amp; Services → Credentials → Create credentials → OAuth client ID → Web application).{" "}
+                In Google Cloud Console, create an OAuth client ID for a Web application.{" "}
                 <a href="https://console.cloud.google.com/apis/credentials" target="_blank" rel="noopener" className="font-medium text-gray-900 underline decoration-gray-300 underline-offset-4">
                   Open Google Cloud Console
                 </a>
               </li>
               <li>
-                <p>Add this authorized redirect URI:</p>
+                <p>Add this exact authorized redirect URI:</p>
                 <div className="mt-1 flex items-center gap-2 rounded-xl border border-gray-200 bg-white p-2">
                   <p data-google-redirect-uri className="min-w-0 flex-1 break-all font-mono text-[11px] leading-5 text-gray-800">
                     {redirectUri || "Loading redirect URI…"}
@@ -852,7 +863,7 @@ function GoogleWorkspaceDialog({
                   Open API library
                 </a>
               </li>
-              <li>Paste the client ID and secret below.</li>
+              <li>Paste the client ID and secret here for first-time setup, or only when you choose to replace saved credentials.</li>
             </ol>
           </div>
           <div className="rounded-2xl border border-gray-100 bg-gray-50 p-4">
@@ -883,23 +894,62 @@ function GoogleWorkspaceDialog({
               ))}
             </div>
           </div>
-          <div>
-            <label className="mb-1.5 block text-[12px] font-medium text-gray-700">Client ID</label>
-            <DenInput
-              value={clientId}
-              onChange={(event) => setClientId(event.target.value)}
-              placeholder={configured ? "Saved client ID kept if left blank" : "1234567890-abc.apps.googleusercontent.com"}
-            />
-          </div>
-          <div>
-            <label className="mb-1.5 block text-[12px] font-medium text-gray-700">Client secret</label>
-            <DenInput
-              type="password"
-              value={clientSecret}
-              onChange={(event) => setClientSecret(event.target.value)}
-              placeholder={configured ? "Saved client secret kept if left blank" : "GOCSPX-…"}
-            />
-          </div>
+          {loadingConfig ? (
+            <div className="rounded-2xl border border-gray-100 bg-gray-50 p-4 text-[13px] text-gray-500">
+              Checking saved credentials…
+            </div>
+          ) : null}
+          {configured && !replacingCredentials ? (
+            <div className="rounded-2xl border border-gray-100 bg-gray-50 p-4">
+              <div className="flex items-center gap-2">
+                <Check className="h-4 w-4 text-emerald-600" />
+                <p className="text-[13px] font-semibold text-gray-900">Credentials saved</p>
+              </div>
+              <p className="mt-1 text-[12px] leading-5 text-gray-500">
+                OpenWork keeps the saved Google client ID and secret when you save permission changes. Replace them only if you are rotating credentials.
+              </p>
+              <div className="mt-3 rounded-xl border border-gray-100 bg-white px-3 py-2 text-[12px] text-gray-800">
+                Saved client ID: <span className="font-mono">{savedClientId ?? "stored in OpenWork"}</span>
+              </div>
+              <DenButton className="mt-3" variant="secondary" size="sm" onClick={startReplacingCredentials} disabled={submitting}>
+                Replace credentials
+              </DenButton>
+            </div>
+          ) : null}
+          {showCredentialFields ? (
+            <div className="rounded-2xl border border-gray-100 bg-gray-50 p-4">
+              <p className="text-[13px] font-semibold text-gray-900">Google OAuth credentials</p>
+              <p className="mt-1 text-[12px] leading-5 text-gray-500">
+                {replacingCredentials
+                  ? "Paste the new client ID and client secret. Both are required to replace the saved credentials."
+                  : "Paste the client ID and client secret from the Google OAuth app. Both are required for first-time setup."}
+              </p>
+              <div className="mt-3 space-y-3">
+                <div>
+                  <label className="mb-1.5 block text-[12px] font-medium text-gray-700">Client ID</label>
+                  <DenInput
+                    value={clientId}
+                    onChange={(event) => setClientId(event.target.value)}
+                    placeholder="1234567890-abc.apps.googleusercontent.com"
+                  />
+                </div>
+                <div>
+                  <label className="mb-1.5 block text-[12px] font-medium text-gray-700">Client secret</label>
+                  <DenInput
+                    type="password"
+                    value={clientSecret}
+                    onChange={(event) => setClientSecret(event.target.value)}
+                    placeholder="GOCSPX-…"
+                  />
+                </div>
+              </div>
+              {replacingCredentials ? (
+                <DenButton className="mt-3" variant="secondary" size="sm" onClick={() => setReplacingCredentials(false)} disabled={submitting}>
+                  Keep saved credentials
+                </DenButton>
+              ) : null}
+            </div>
+          ) : null}
         </div>
 
         {formError ? (
@@ -915,12 +965,11 @@ function GoogleWorkspaceDialog({
             loading={submitting}
             disabled={saveDisabled}
             onClick={() => onSubmit({
-              ...(trimmedClientId ? { clientId: trimmedClientId } : {}),
-              ...(trimmedClientSecret ? { clientSecret: trimmedClientSecret } : {}),
+              ...(showCredentialFields ? { clientId: trimmedClientId, clientSecret: trimmedClientSecret } : {}),
               features,
             })}
           >
-            Save
+            {configured && !replacingCredentials ? "Save permissions" : replacingCredentials ? "Save new credentials" : "Save setup"}
           </DenButton>
         </div>
       </div>
@@ -1016,6 +1065,62 @@ function ConnectionRow({
   );
 }
 
+type SegmentedControlOption<TValue extends string> = {
+  value: TValue;
+  label: string;
+};
+
+function SegmentedControl<TValue extends string>({
+  options,
+  value,
+  onChange,
+}: {
+  options: SegmentedControlOption<TValue>[];
+  value: TValue;
+  onChange: (value: TValue) => void;
+}) {
+  const gridColumns = options.length === 2 ? "grid-cols-2" : "grid-cols-3";
+
+  return (
+    <div className={`grid ${gridColumns} gap-1 rounded-full border border-gray-200 bg-gray-50 p-1`} role="group">
+      {options.map((option) => (
+        <button
+          key={option.value}
+          type="button"
+          aria-pressed={value === option.value}
+          onClick={() => onChange(option.value)}
+          className={`rounded-full px-3 py-1.5 text-[12px] font-medium transition ${
+            value === option.value
+              ? "bg-white text-gray-900 shadow-[0_1px_2px_rgba(15,23,42,0.08)]"
+              : "text-gray-500 hover:text-gray-900"
+          }`}
+        >
+          {option.label}
+        </button>
+      ))}
+    </div>
+  );
+}
+
+type AddConnectionAccessMode = "everyone" | "teams" | "people";
+
+const AUTH_TYPE_OPTIONS: SegmentedControlOption<ExternalMcpAuthType>[] = [
+  { value: "oauth", label: "OAuth" },
+  { value: "apikey", label: "API key" },
+  { value: "none", label: "None" },
+];
+
+const CREDENTIAL_MODE_OPTIONS: SegmentedControlOption<ExternalMcpCredentialMode>[] = [
+  { value: "per_member", label: "Individual accounts" },
+  { value: "shared", label: "One org account" },
+];
+
+const ACCESS_MODE_OPTIONS: SegmentedControlOption<AddConnectionAccessMode>[] = [
+  { value: "everyone", label: "Everyone" },
+  { value: "teams", label: "Specific teams" },
+  { value: "people", label: "Specific people" },
+];
+
 function AddConnectionDialog({
   open,
   preset,
@@ -1042,7 +1147,7 @@ function AddConnectionDialog({
   const [oauthClientSecret, setOAuthClientSecret] = useState("");
   const [oauthCallback, setOAuthCallback] = useState<string | null>(null);
   const [copiedCallback, setCopiedCallback] = useState(false);
-  const [accessMode, setAccessMode] = useState<"everyone" | "teams" | "people">("everyone");
+  const [accessMode, setAccessMode] = useState<AddConnectionAccessMode>("everyone");
   const [selectedTeamIds, setSelectedTeamIds] = useState<string[]>([]);
   const [selectedMemberIds, setSelectedMemberIds] = useState<string[]>([]);
 
@@ -1075,6 +1180,7 @@ function AddConnectionDialog({
 
   const showOAuthClientFields = authType === "oauth" && (Boolean(preset?.requiresOAuthClient) || showOAuthClient);
   const oauthClientRequired = authType === "oauth" && Boolean(preset?.requiresOAuthClient);
+  const isSlackPreset = preset?.presetId === "slack";
   const access: McpConnectionAccessInput = accessMode === "everyone"
     ? { orgWide: true, memberIds: [], teamIds: [] }
     : { orgWide: false, memberIds: accessMode === "people" ? selectedMemberIds : [], teamIds: accessMode === "teams" ? selectedTeamIds : [] };
@@ -1121,9 +1227,13 @@ function AddConnectionDialog({
       >
         {oauthCallback ? (
           <>
-            <h2 className="text-[18px] font-semibold tracking-[-0.02em] text-gray-950">Almost done — add this redirect URL to your app:</h2>
+            <h2 className="text-[18px] font-semibold tracking-[-0.02em] text-gray-950">
+              {isSlackPreset ? "Almost done — add this redirect URL to your Slack app" : "Almost done — add this redirect URL to your app"}
+            </h2>
             <p className="mt-2 text-[13px] leading-6 text-gray-600">
-              Copy this into the OAuth redirect URLs for your pre-registered app before teammates connect.
+              {isSlackPreset
+                ? "Copy this exact URL into your Slack app's OAuth redirect URLs before teammates connect."
+                : "Copy this into the OAuth redirect URLs for your pre-registered app before teammates connect."}
             </p>
             <div className="mt-4 rounded-2xl border border-gray-200 bg-gray-50 p-3">
               <p className="break-all font-mono text-[12px] leading-5 text-gray-800">{oauthCallback}</p>
@@ -1143,7 +1253,11 @@ function AddConnectionDialog({
           {preset ? `Add ${preset.displayName}` : "Add a custom MCP server"}
         </h2>
         <p className="mt-1 text-[13px] leading-6 text-gray-600">
-          Connect an MCP server org-wide. If it requires OAuth, you&apos;ll authorize it in a new tab next.
+          {isSlackPreset ? (
+            <>
+              Slack MCP needs a pre-registered Slack app — Slack does not support automatic app registration. Paste your Slack app&apos;s OAuth client below.
+            </>
+          ) : "Connect an MCP server org-wide. If it requires OAuth, you'll authorize it in a new tab next."}
         </p>
 
         <div className="mt-5 space-y-4">
@@ -1163,25 +1277,14 @@ function AddConnectionDialog({
           {!preset ? (
             <div>
               <label className="mb-1.5 block text-[12px] font-medium text-gray-700">Authentication</label>
-              <div className="flex gap-2">
-                {(["oauth", "apikey", "none"] as const).map((option) => (
-                  <button
-                    key={option}
-                    type="button"
-                    onClick={() => {
-                      setAuthType(option);
-                      if (option !== "oauth") setShowOAuthClient(false);
-                    }}
-                    className={`rounded-full border px-3 py-1.5 text-[12px] font-medium transition ${
-                      authType === option
-                        ? "border-gray-900 bg-gray-900 text-white"
-                        : "border-gray-200 text-gray-600 hover:border-gray-300"
-                    }`}
-                  >
-                    {option === "oauth" ? "OAuth" : option === "apikey" ? "API key" : "None"}
-                  </button>
-                ))}
-              </div>
+              <SegmentedControl
+                options={AUTH_TYPE_OPTIONS}
+                value={authType}
+                onChange={(option) => {
+                  setAuthType(option);
+                  if (option !== "oauth") setShowOAuthClient(false);
+                }}
+              />
             </div>
           ) : null}
           {authType === "apikey" ? (
@@ -1203,9 +1306,11 @@ function AddConnectionDialog({
 
           {showOAuthClientFields ? (
             <div className="rounded-2xl border border-gray-100 bg-gray-50 p-4">
-              <p className="text-[13px] font-semibold text-gray-900">OAuth app</p>
+              <p className="text-[13px] font-semibold text-gray-900">{isSlackPreset ? "Slack OAuth app" : "OAuth app"}</p>
               <p className="mt-1 text-[12px] leading-5 text-gray-500">
-                Create an app for your workspace, then paste its OAuth client here. Each person connects their own account with it — sign-ins stay in your org&apos;s cloud.
+                {isSlackPreset
+                  ? "Create or use an internal or directory-published Slack app, then paste its Client ID and Client secret. After you create the connection, OpenWork shows the exact redirect URL to add to that Slack app."
+                  : "Create an app for your workspace, then paste its OAuth client here. Each person connects their own account with it — sign-ins stay in your org's cloud."}
               </p>
               <div className="mt-3 space-y-3">
                 <div>
@@ -1232,26 +1337,7 @@ function AddConnectionDialog({
           {authType === "oauth" ? (
             <div>
               <label className="mb-1.5 block text-[12px] font-medium text-gray-700">Whose account does the AI use?</label>
-              <div className="flex gap-2">
-                <button
-                  type="button"
-                  onClick={() => setCredentialMode("per_member")}
-                  className={`rounded-full border px-3 py-1.5 text-[12px] font-medium transition ${
-                    credentialMode === "per_member" ? "border-gray-900 bg-gray-900 text-white" : "border-gray-200 text-gray-600 hover:border-gray-300"
-                  }`}
-                >
-                  Individual accounts
-                </button>
-                <button
-                  type="button"
-                  onClick={() => setCredentialMode("shared")}
-                  className={`rounded-full border px-3 py-1.5 text-[12px] font-medium transition ${
-                    credentialMode === "shared" ? "border-gray-900 bg-gray-900 text-white" : "border-gray-200 text-gray-600 hover:border-gray-300"
-                  }`}
-                >
-                  One org account
-                </button>
-              </div>
+              <SegmentedControl options={CREDENTIAL_MODE_OPTIONS} value={credentialMode} onChange={setCredentialMode} />
               <p className="mt-1.5 text-[12px] leading-5 text-gray-500">
                 {credentialMode === "per_member"
                   ? "Each person signs in with their own account from Your Connections. Their AI acts as them, with their permissions."
@@ -1262,20 +1348,7 @@ function AddConnectionDialog({
 
           <div>
             <label className="mb-1.5 block text-[12px] font-medium text-gray-700">Who can use this?</label>
-            <div className="flex gap-2">
-              {(["everyone", "teams", "people"] as const).map((option) => (
-                <button
-                  key={option}
-                  type="button"
-                  onClick={() => setAccessMode(option)}
-                  className={`rounded-full border px-3 py-1.5 text-[12px] font-medium transition ${
-                    accessMode === option ? "border-gray-900 bg-gray-900 text-white" : "border-gray-200 text-gray-600 hover:border-gray-300"
-                  }`}
-                >
-                  {option === "everyone" ? "Everyone in the org" : option === "teams" ? "Specific teams" : "Specific people"}
-                </button>
-              ))}
-            </div>
+            <SegmentedControl options={ACCESS_MODE_OPTIONS} value={accessMode} onChange={setAccessMode} />
             {accessMode === "teams" ? (
               <div className="mt-2 max-h-40 space-y-1 overflow-y-auto rounded-xl border border-gray-100 p-2">
                 {teams.length === 0 ? (
@@ -1287,7 +1360,7 @@ function AddConnectionDialog({
                       type="button"
                       onClick={() => setSelectedTeamIds((current) => toggle(current, team.id))}
                       className={`flex w-full items-center justify-between rounded-lg px-2.5 py-1.5 text-left text-[13px] transition ${
-                        selectedTeamIds.includes(team.id) ? "bg-gray-900 text-white" : "text-gray-700 hover:bg-gray-50"
+                        selectedTeamIds.includes(team.id) ? "bg-gray-100 text-gray-900" : "text-gray-700 hover:bg-gray-50"
                       }`}
                     >
                       <span className="truncate">{team.name}</span>
@@ -1308,7 +1381,7 @@ function AddConnectionDialog({
                       type="button"
                       onClick={() => setSelectedMemberIds((current) => toggle(current, member.id))}
                       className={`flex w-full items-center justify-between rounded-lg px-2.5 py-1.5 text-left text-[13px] transition ${
-                        selectedMemberIds.includes(member.id) ? "bg-gray-900 text-white" : "text-gray-700 hover:bg-gray-50"
+                        selectedMemberIds.includes(member.id) ? "bg-gray-100 text-gray-900" : "text-gray-700 hover:bg-gray-50"
                       }`}
                     >
                       <span className="truncate">{member.user.name || member.user.email}</span>
@@ -1332,10 +1405,10 @@ function AddConnectionDialog({
           <DenButton
             variant="primary"
             loading={submitting}
-            disabled={!name.trim() || !url.trim() || (authType === "apikey" && !apiKey.trim()) || (oauthClientRequired && !oauthClientId.trim()) || accessIncomplete}
+            disabled={!name.trim() || !url.trim() || (authType === "apikey" && !apiKey.trim()) || (oauthClientRequired && (!oauthClientId.trim() || !oauthClientSecret.trim())) || accessIncomplete}
             onClick={() => void submit()}
           >
-            Add connection
+            {showOAuthClientFields ? "Create and show redirect URL" : "Add connection"}
           </DenButton>
         </div>
           </>
