@@ -41,6 +41,31 @@ function expectMessage(body: unknown): string {
   return body.message
 }
 
+function expectRecord(value: unknown, label: string): Record<string, unknown> {
+  if (!isRecord(value)) {
+    throw new Error(`Expected ${label} to be an object`)
+  }
+  return value
+}
+
+function expectString(value: unknown, label: string): string {
+  if (typeof value !== "string") {
+    throw new Error(`Expected ${label} to be a string`)
+  }
+  return value
+}
+
+function expectDraftMessage(): Record<string, unknown> {
+  const payload = expectRecord(lastDraftPayload, "Gmail draft payload")
+  return expectRecord(payload.message, "Gmail draft message")
+}
+
+function decodeDraftRaw(): string {
+  const message = expectDraftMessage()
+  const raw = expectString(message.raw, "Gmail draft raw")
+  return Buffer.from(raw, "base64url").toString("utf8")
+}
+
 const GMAIL_READ_SCOPE = "https://www.googleapis.com/auth/gmail.readonly"
 const CALENDAR_READ_SCOPE = "https://www.googleapis.com/auth/calendar.readonly"
 const CALENDAR_EVENTS_SCOPE = "https://www.googleapis.com/auth/calendar.events"
@@ -49,14 +74,30 @@ const FULL_SCOPES = [GMAIL_READ_SCOPE, CALENDAR_READ_SCOPE, CALENDAR_EVENTS_SCOP
 
 let lastAuthorization: string | null = null
 let googleCallCount = 0
+let googleCallUrls: string[] = []
 let forceGoogleError = false
+let forceGmailThreadError = false
 let lastDriveQuery: string | null = null
+let lastCalendarEventPayload: unknown = null
+let lastCalendarUrl: string | null = null
+let lastCalendarMethod: string | null = null
+let calendarCreateCount = 0
+let lastDraftPayload: unknown = null
+let lastGmailThreadUrl: string | null = null
 
 function resetFakeGoogle() {
   lastAuthorization = null
   googleCallCount = 0
+  googleCallUrls = []
   forceGoogleError = false
+  forceGmailThreadError = false
   lastDriveQuery = null
+  lastCalendarEventPayload = null
+  lastCalendarUrl = null
+  lastCalendarMethod = null
+  calendarCreateCount = 0
+  lastDraftPayload = null
+  lastGmailThreadUrl = null
 }
 
 function gmailMessagePayload() {
@@ -86,7 +127,13 @@ const fakeGoogleServer = Bun.serve({
   async fetch(request) {
     const url = new URL(request.url)
     googleCallCount += 1
+    googleCallUrls.push(request.url)
     lastAuthorization = request.headers.get("authorization")
+
+    if (url.pathname.startsWith("/calendar/v3/calendars/primary/events")) {
+      lastCalendarUrl = request.url
+      lastCalendarMethod = request.method
+    }
 
     if (forceGoogleError && url.pathname === "/calendar/v3/calendars/primary/events") {
       return new Response("calendar exploded", { status: 500 })
@@ -97,6 +144,40 @@ const fakeGoogleServer = Bun.serve({
     }
     if (url.pathname === "/gmail/v1/users/me/messages/msg_1") {
       return json(gmailMessagePayload())
+    }
+    if (url.pathname === "/gmail/v1/users/me/threads/thread_1") {
+      lastGmailThreadUrl = request.url
+      if (forceGmailThreadError) {
+        return new Response("thread exploded", { status: 500 })
+      }
+      return json({
+        messages: [
+          {
+            id: "msg_1",
+            payload: {
+              headers: [
+                { name: "Message-ID", value: "<orig-1@mail.gmail.com>" },
+                { name: "Subject", value: "Quarterly plan" },
+              ],
+            },
+          },
+          {
+            id: "msg_2",
+            payload: {
+              headers: [
+                { name: "Message-ID", value: "<orig-2@mail.gmail.com>" },
+                { name: "References", value: "<orig-1@mail.gmail.com>" },
+                { name: "Subject", value: "Quarterly plan" },
+              ],
+            },
+          },
+        ],
+      })
+    }
+    if (url.pathname === "/gmail/v1/users/me/drafts" && request.method === "POST") {
+      const body: unknown = await request.json()
+      lastDraftPayload = body
+      return json({ id: "draft_1", message: { id: "draft_msg_1", threadId: "thread_1" } })
     }
 
     if (url.pathname === "/calendar/v3/calendars/primary/events" && request.method === "GET") {
@@ -112,6 +193,7 @@ const fakeGoogleServer = Bun.serve({
             status: "confirmed",
             htmlLink: "https://calendar.google.com/event?eid=event_1",
             attendees: [{ email: "ada@example.com" }, { email: "ben@example.com" }],
+            hangoutLink: "https://meet.google.com/list-meet",
           },
           {
             id: "event_2",
@@ -123,12 +205,30 @@ const fakeGoogleServer = Bun.serve({
       })
     }
     if (url.pathname === "/calendar/v3/calendars/primary/events" && request.method === "POST") {
+      const body: unknown = await request.json()
+      lastCalendarEventPayload = body
+      calendarCreateCount += 1
       return json({
         id: "created_event_1",
         summary: "Created event",
         start: { dateTime: "2026-07-08T12:00:00Z" },
         end: { dateTime: "2026-07-08T12:30:00Z" },
         htmlLink: "https://calendar.google.com/event?eid=created_event_1",
+        hangoutLink: "https://meet.google.com/created-meet",
+      })
+    }
+    if (url.pathname === "/calendar/v3/calendars/primary/events/existing_event_1" && request.method === "PATCH") {
+      const body: unknown = await request.json()
+      lastCalendarEventPayload = body
+      return json({
+        id: "existing_event_1",
+        summary: "Existing event",
+        start: { dateTime: "2026-07-08T14:00:00Z" },
+        end: { dateTime: "2026-07-08T14:30:00Z" },
+        htmlLink: "https://calendar.google.com/event?eid=existing_event_1",
+        conferenceData: {
+          entryPoints: [{ entryPointType: "video", uri: "https://meet.google.com/updated-meet" }],
+        },
       })
     }
 
@@ -298,6 +398,7 @@ test("calendar list returns mapped events and sends the member token", async () 
         status: "confirmed",
         htmlLink: "https://calendar.google.com/event?eid=event_1",
         attendees: ["ada@example.com", "ben@example.com"],
+        meetLink: "https://meet.google.com/list-meet",
       },
       {
         id: "event_2",
@@ -309,8 +410,92 @@ test("calendar list returns mapped events and sends the member token", async () 
         status: "",
         htmlLink: "",
         attendees: [],
+        meetLink: null,
       },
     ],
+  })
+})
+
+test("calendar create requests a Google Meet link when asked", async () => {
+  const response = await request("/v1/capabilities/google-workspace/calendar-events", {
+    method: "POST",
+    body: {
+      summary: "Planning call",
+      start: "2026-07-08T12:00:00Z",
+      end: "2026-07-08T12:30:00Z",
+      attendees: ["ada@example.com"],
+      createMeetLink: true,
+    },
+  })
+  expect(response.status).toBe(200)
+  expect(lastCalendarMethod).toBe("POST")
+  if (!lastCalendarUrl) {
+    throw new Error("Expected calendar create URL to be recorded")
+  }
+  const url = new URL(lastCalendarUrl)
+  expect(url.pathname).toBe("/calendar/v3/calendars/primary/events")
+  expect(url.searchParams.get("conferenceDataVersion")).toBe("1")
+
+  const payload = expectRecord(lastCalendarEventPayload, "calendar create payload")
+  expect(payload.summary).toBe("Planning call")
+  expect(payload.attendees).toEqual([{ email: "ada@example.com" }])
+  const conferenceData = expectRecord(payload.conferenceData, "calendar create conferenceData")
+  const createRequest = expectRecord(conferenceData.createRequest, "calendar create createRequest")
+  const requestId = createRequest.requestId
+  if (typeof requestId !== "string") {
+    throw new Error("Expected calendar create requestId to be a string")
+  }
+  expect(requestId.startsWith("openwork-")).toBe(true)
+  const solutionKey = expectRecord(createRequest.conferenceSolutionKey, "calendar create conferenceSolutionKey")
+  expect(solutionKey.type).toBe("hangoutsMeet")
+
+  const body: unknown = await response.json()
+  expect(body).toEqual({
+    ok: true,
+    eventId: "created_event_1",
+    htmlLink: "https://calendar.google.com/event?eid=created_event_1",
+    summary: "Created event",
+    start: "2026-07-08T12:00:00Z",
+    end: "2026-07-08T12:30:00Z",
+    meetLink: "https://meet.google.com/created-meet",
+  })
+})
+
+test("calendar patch adds a Google Meet link without creating a duplicate", async () => {
+  const response = await request("/v1/capabilities/google-workspace/calendar-event/existing_event_1", {
+    method: "PATCH",
+    body: { createMeetLink: true },
+  })
+  expect(response.status).toBe(200)
+  expect(lastCalendarMethod).toBe("PATCH")
+  expect(calendarCreateCount).toBe(0)
+  if (!lastCalendarUrl) {
+    throw new Error("Expected calendar update URL to be recorded")
+  }
+  const url = new URL(lastCalendarUrl)
+  expect(url.pathname).toBe("/calendar/v3/calendars/primary/events/existing_event_1")
+  expect(url.searchParams.get("conferenceDataVersion")).toBe("1")
+
+  const payload = expectRecord(lastCalendarEventPayload, "calendar update payload")
+  const conferenceData = expectRecord(payload.conferenceData, "calendar update conferenceData")
+  const createRequest = expectRecord(conferenceData.createRequest, "calendar update createRequest")
+  const requestId = createRequest.requestId
+  if (typeof requestId !== "string") {
+    throw new Error("Expected calendar update requestId to be a string")
+  }
+  expect(requestId.startsWith("openwork-")).toBe(true)
+  const solutionKey = expectRecord(createRequest.conferenceSolutionKey, "calendar update conferenceSolutionKey")
+  expect(solutionKey.type).toBe("hangoutsMeet")
+
+  const body: unknown = await response.json()
+  expect(body).toEqual({
+    ok: true,
+    eventId: "existing_event_1",
+    htmlLink: "https://calendar.google.com/event?eid=existing_event_1",
+    summary: "Existing event",
+    start: "2026-07-08T14:00:00Z",
+    end: "2026-07-08T14:30:00Z",
+    meetLink: "https://meet.google.com/updated-meet",
   })
 })
 
@@ -333,6 +518,128 @@ test("gmail list returns metadata-mapped messages", async () => {
       },
     ],
   })
+})
+
+test("gmail plain draft supports cc without requiring a thread", async () => {
+  const to = "sam@acme.test"
+  const subject = "Quarterly plan"
+  const response = await request("/v1/capabilities/google-workspace/gmail-drafts", {
+    method: "POST",
+    body: {
+      to,
+      cc: "ada@acme.test, grace@acme.test",
+      subject,
+      body: "Draft body",
+    },
+  })
+  expect(response.status).toBe(200)
+  expect(googleCallCount).toBe(1)
+  const message = expectDraftMessage()
+  expect("threadId" in message).toBe(false)
+  const decoded = decodeDraftRaw()
+  expect(decoded).toContain("To: sam@acme.test\r\n")
+  expect(decoded).toContain("Cc: ada@acme.test, grace@acme.test\r\n")
+  expect(decoded).toContain("Subject: Quarterly plan\r\n")
+  const body: unknown = await response.json()
+  expect(body).toEqual({ ok: true, draftId: "draft_1", messageId: "draft_msg_1", to, subject, threadId: null })
+})
+
+test("gmail threaded reply draft reads thread metadata and sends reply headers", async () => {
+  const response = await request("/v1/capabilities/google-workspace/gmail-drafts", {
+    method: "POST",
+    body: {
+      to: "sam@acme.test",
+      cc: "ada@acme.test",
+      subject: "Quarterly plan",
+      threadId: "thread_1",
+      body: "Reply body",
+    },
+  })
+  expect(response.status).toBe(200)
+  expect(googleCallCount).toBe(2)
+  const firstUrl = new URL(expectString(googleCallUrls[0], "first Google URL"))
+  expect(firstUrl.pathname).toBe("/gmail/v1/users/me/threads/thread_1")
+  expect(firstUrl.searchParams.get("format")).toBe("metadata")
+  expect(firstUrl.searchParams.getAll("metadataHeaders")).toEqual(["Message-ID", "References", "Subject"])
+  const secondUrl = new URL(expectString(googleCallUrls[1], "second Google URL"))
+  expect(secondUrl.pathname).toBe("/gmail/v1/users/me/drafts")
+  expect(lastGmailThreadUrl).toBe(expectString(googleCallUrls[0], "first Google URL"))
+  const message = expectDraftMessage()
+  expect(message.threadId).toBe("thread_1")
+  const decoded = decodeDraftRaw()
+  expect(decoded).toContain("In-Reply-To: <orig-2@mail.gmail.com>\r\n")
+  expect(decoded).toContain("References: <orig-1@mail.gmail.com> <orig-2@mail.gmail.com>\r\n")
+  const body: unknown = await response.json()
+  const responseBody = expectRecord(body, "threaded draft response")
+  expect(responseBody.threadId).toBe("thread_1")
+})
+
+test("gmail threaded reply draft requires Gmail read scope before calling Google", async () => {
+  await seedConnectedAccount([CALENDAR_READ_SCOPE, CALENDAR_EVENTS_SCOPE, DRIVE_READ_SCOPE])
+  resetFakeGoogle()
+  const response = await request("/v1/capabilities/google-workspace/gmail-drafts", {
+    method: "POST",
+    body: {
+      to: "sam@acme.test",
+      subject: "Quarterly plan",
+      threadId: "thread_1",
+      body: "Reply body",
+    },
+  })
+  expect(response.status).toBe(409)
+  expect(googleCallCount).toBe(0)
+  const body: unknown = await response.json()
+  expect(expectMessage(body)).toContain("missing the Gmail read permission")
+})
+
+test("gmail plain draft still works without Gmail read scope", async () => {
+  await seedConnectedAccount([CALENDAR_READ_SCOPE, CALENDAR_EVENTS_SCOPE, DRIVE_READ_SCOPE])
+  resetFakeGoogle()
+  const response = await request("/v1/capabilities/google-workspace/gmail-drafts", {
+    method: "POST",
+    body: {
+      to: "sam@acme.test",
+      subject: "Quarterly plan",
+      body: "Draft body",
+    },
+  })
+  expect(response.status).toBe(200)
+  expect(googleCallCount).toBe(1)
+})
+
+test("gmail draft rejects unknown body keys without calling Google", async () => {
+  const response = await request("/v1/capabilities/google-workspace/gmail-drafts", {
+    method: "POST",
+    body: {
+      to: "sam@acme.test",
+      subject: "Quarterly plan",
+      body: "Draft body",
+      replyTo: "x@y.z",
+    },
+  })
+  expect(response.status).toBe(400)
+  expect(googleCallCount).toBe(0)
+  const body: unknown = await response.json()
+  expect(expectRecord(body, "invalid request response").error).toBe("invalid_request")
+})
+
+test("gmail threaded reply draft returns google_api_error when thread metadata fetch fails", async () => {
+  forceGmailThreadError = true
+  const response = await request("/v1/capabilities/google-workspace/gmail-drafts", {
+    method: "POST",
+    body: {
+      to: "sam@acme.test",
+      subject: "Quarterly plan",
+      threadId: "thread_1",
+      body: "Reply body",
+    },
+  })
+  expect(response.status).toBe(502)
+  expect(googleCallCount).toBe(1)
+  const body: unknown = await response.json()
+  const responseBody = expectRecord(body, "thread error response")
+  expect(responseBody.error).toBe("google_api_error")
+  expect(expectMessage(body).startsWith("Gmail thread read failed: 500")).toBe(true)
 })
 
 test("drive search returns mapped files", async () => {
@@ -364,7 +671,7 @@ test("no connected account returns needs_connection", async () => {
   const body: unknown = await response.json()
   expect(body).toEqual({
     error: "needs_connection",
-    message: "Connect your Google account first: open Settings, then Extensions, and use Connect your account on the Google Workspace card.",
+    message: "Connect your Google account first: open Settings > Connect and use Connect your account on the Google Workspace row, or connect from the OpenWork Cloud dashboard.",
   })
 })
 
@@ -399,6 +706,7 @@ test("Google Workspace capability tools are discoverable and keep readable names
 
   const catalog = buildMcpCatalog(document)
   expect(searchCapabilities(catalog, "calendar events list", 10)[0]?.name).toBe("getCapabilitiesGoogleWorkspaceCalendarEvents")
+  expect(searchCapabilities(catalog, "add meet link existing event", 10)[0]?.name).toBe("patchCapabilitiesGoogleWorkspaceCalendarEvent")
   expect(searchCapabilities(catalog, "drive files", 10)[0]?.name).toBe("getCapabilitiesGoogleWorkspaceDriveFiles")
   expect(searchCapabilities(catalog, "gmail search read messages", 10)[0]?.name).toBe("getCapabilitiesGoogleWorkspaceGmailMessages")
 
@@ -407,6 +715,7 @@ test("Google Workspace capability tools are discoverable and keep readable names
     "getCapabilitiesGoogleWorkspaceGmailMessage",
     "getCapabilitiesGoogleWorkspaceCalendarEvents",
     "postCapabilitiesGoogleWorkspaceCalendarEvents",
+    "patchCapabilitiesGoogleWorkspaceCalendarEvent",
     "getCapabilitiesGoogleWorkspaceDriveFiles",
     "getCapabilitiesGoogleWorkspaceDriveFile",
   ]

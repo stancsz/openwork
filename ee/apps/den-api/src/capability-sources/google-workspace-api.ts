@@ -27,6 +27,7 @@ export type GoogleWorkspaceCalendarEvent = {
   status: string
   htmlLink: string
   attendees: string[]
+  meetLink: string | null
 }
 
 export type GoogleWorkspaceDriveFile = {
@@ -138,6 +139,23 @@ function readGmailHeaders(payload: Record<string, unknown>) {
   return headers
 }
 
+export function extractGmailThreadReplyContext(json: unknown): { lastMessageId: string; references: string } | null {
+  const root = isRecord(json) ? json : {}
+  const messages = readArray(root, "messages")
+  const lastMessage = messages.at(-1)
+  if (!isRecord(lastMessage)) return null
+
+  const payload = readRecord(lastMessage, "payload")
+  if (!payload) return null
+
+  const headers = readGmailHeaders(payload)
+  const lastMessageId = headers.get("message-id")?.trim() ?? ""
+  if (!lastMessageId) return null
+
+  const references = `${headers.get("references")?.trim() ?? ""} ${lastMessageId}`.trim()
+  return { lastMessageId, references }
+}
+
 export function truncateText(text: string, maxCharacters: number): { text: string; truncated: boolean } {
   if (text.length <= maxCharacters) {
     return { text, truncated: false }
@@ -193,6 +211,22 @@ function calendarEventTime(event: Record<string, unknown>, key: string): string 
   return readString(time, "date")
 }
 
+function calendarEventMeetLink(event: Record<string, unknown>): string | null {
+  const hangoutLink = readString(event, "hangoutLink")
+  if (hangoutLink) return hangoutLink
+
+  const conferenceData = readRecord(event, "conferenceData")
+  if (!conferenceData) return null
+
+  for (const entryPoint of readArray(conferenceData, "entryPoints")) {
+    if (!isRecord(entryPoint)) continue
+    if (readString(entryPoint, "entryPointType") !== "video") continue
+    const uri = readString(entryPoint, "uri")
+    if (uri) return uri
+  }
+  return null
+}
+
 export function extractCalendarEvents(json: unknown): GoogleWorkspaceCalendarEvent[] {
   const root = isRecord(json) ? json : {}
   const events: GoogleWorkspaceCalendarEvent[] = []
@@ -214,6 +248,7 @@ export function extractCalendarEvents(json: unknown): GoogleWorkspaceCalendarEve
       status: readString(item, "status"),
       htmlLink: readString(item, "htmlLink"),
       attendees,
+      meetLink: calendarEventMeetLink(item),
     })
   }
   return events

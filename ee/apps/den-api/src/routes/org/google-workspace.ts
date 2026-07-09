@@ -1,4 +1,5 @@
 import type { Hono } from "hono"
+import { randomUUID } from "node:crypto"
 import { describeRoute } from "hono-openapi"
 import { z } from "zod"
 import type { DenTypeId } from "@openwork-ee/utils/typeid"
@@ -13,6 +14,7 @@ import {
   extractDriveFiles,
   extractGmailMessage,
   extractGmailMessageIds,
+  extractGmailThreadReplyContext,
   truncateText,
 } from "../../capability-sources/google-workspace-api.js"
 import type { ConnectedAccountRow } from "../../capability-sources/oauth-credentials.js"
@@ -25,14 +27,18 @@ const CALENDAR_EVENTS_SCOPE = "https://www.googleapis.com/auth/calendar.events"
 const DRIVE_FILE_SCOPE = "https://www.googleapis.com/auth/drive.file"
 const DRIVE_READ_SCOPE = "https://www.googleapis.com/auth/drive.readonly"
 const DRIVE_FULL_SCOPE = "https://www.googleapis.com/auth/drive"
+const GOOGLE_WORKSPACE_API_TIMEOUT_MS = 30_000
 
-const CONNECT_GOOGLE_ACCOUNT_MESSAGE = "Connect your Google account first: open Settings, then Extensions, and use Connect your account on the Google Workspace card."
+const CONNECT_GOOGLE_ACCOUNT_MESSAGE = "Connect your Google account first: open Settings > Connect and use Connect your account on the Google Workspace row, or connect from the OpenWork Cloud dashboard."
 
 const createDraftBodySchema = z.object({
   to: z.string().trim().min(3).max(320).describe("Recipient email address."),
+  cc: z.string().trim().min(3).max(1_000).optional().describe("Optional comma-separated Cc email addresses."),
+  bcc: z.string().trim().min(3).max(1_000).optional().describe("Optional comma-separated Bcc email addresses."),
   subject: z.string().trim().min(1).max(500).describe("Draft subject line."),
   body: z.string().min(1).max(50_000).describe("Plain-text draft body."),
-})
+  threadId: z.string().trim().min(1).max(512).optional().describe("Optional Gmail thread id to reply on. Get it from the gmail-messages capability. When set, the draft is attached to that thread as a reply — keep the thread's subject (e.g. 'Re: …')."),
+}).strict()
 
 const createDraftResponseSchema = z.object({
   ok: z.literal(true),
@@ -40,6 +46,7 @@ const createDraftResponseSchema = z.object({
   messageId: z.string().nullable(),
   to: z.string(),
   subject: z.string(),
+  threadId: z.string().nullable(),
 }).meta({ ref: "GoogleWorkspaceDraftResponse" })
 
 const needsConnectionSchema = z.object({
@@ -99,6 +106,10 @@ const calendarEventsQuerySchema = z.object({
   maxResults: z.coerce.number().int().min(1).max(100).default(25).describe("Maximum events to return, capped at 100."),
 }).meta({ ref: "GoogleWorkspaceCalendarEventsQuery" })
 
+const calendarEventParamSchema = z.object({
+  eventId: z.string().trim().min(1).max(512).describe("Google Calendar event id."),
+}).meta({ ref: "GoogleWorkspaceCalendarEventParams" })
+
 const calendarEventSchema = z.object({
   id: z.string(),
   summary: z.string(),
@@ -109,6 +120,7 @@ const calendarEventSchema = z.object({
   status: z.string(),
   htmlLink: z.string(),
   attendees: z.array(z.string()),
+  meetLink: z.string().nullable(),
 }).meta({ ref: "GoogleWorkspaceCalendarEvent" })
 
 const calendarEventsResponseSchema = z.object({
@@ -124,6 +136,7 @@ const createCalendarEventBodySchema = z.object({
   end: z.string().datetime().describe("Event end date-time."),
   timeZone: z.string().trim().min(1).max(128).optional().describe("Optional IANA time zone for start and end."),
   attendees: z.array(z.string().email()).max(100).optional().describe("Optional attendee email addresses."),
+  createMeetLink: z.boolean().optional().describe("Set true to create a Google Meet conferencing link for this event; the response returns meetLink when Google creates it."),
 }).meta({ ref: "GoogleWorkspaceCreateCalendarEventBody" })
 
 const createCalendarEventResponseSchema = z.object({
@@ -133,7 +146,22 @@ const createCalendarEventResponseSchema = z.object({
   summary: z.string(),
   start: z.string(),
   end: z.string(),
+  meetLink: z.string().nullable(),
 }).meta({ ref: "GoogleWorkspaceCreateCalendarEventResponse" })
+
+const updateCalendarEventBodySchema = z.object({
+  createMeetLink: z.literal(true).describe("Set true to add a Google Meet conferencing link to this existing event."),
+}).meta({ ref: "GoogleWorkspaceUpdateCalendarEventBody" })
+
+const updateCalendarEventResponseSchema = z.object({
+  ok: z.literal(true),
+  eventId: z.string(),
+  htmlLink: z.string(),
+  summary: z.string(),
+  start: z.string(),
+  end: z.string(),
+  meetLink: z.string().nullable(),
+}).meta({ ref: "GoogleWorkspaceUpdateCalendarEventResponse" })
 
 const driveFilesQuerySchema = z.object({
   query: z.string().trim().min(1).max(500).describe("Text to search in Drive file names and full text."),
@@ -171,6 +199,13 @@ type GoogleWorkspaceAccessToken =
   | { kind: "needs_connection"; message: string }
   | { kind: "google_api_error"; message: string }
 
+type CalendarConferenceData = {
+  createRequest: {
+    requestId: string
+    conferenceSolutionKey: { type: "hangoutsMeet" }
+  }
+}
+
 type CalendarEventCreatePayload = {
   summary: string
   description?: string
@@ -178,6 +213,7 @@ type CalendarEventCreatePayload = {
   start: { dateTime: string; timeZone?: string }
   end: { dateTime: string; timeZone?: string }
   attendees?: { email: string }[]
+  conferenceData?: CalendarConferenceData
 }
 
 function gmailApiBase(): string {
@@ -232,6 +268,13 @@ async function googleApiError(operation: string, response: Response) {
   return { error: "google_api_error", message: `${operation} failed: ${response.status} ${text.slice(0, 300)}` }
 }
 
+async function googleWorkspaceApiFetch(input: Parameters<typeof fetch>[0], init?: RequestInit): Promise<Response> {
+  return fetch(input, {
+    ...init,
+    signal: AbortSignal.timeout(GOOGLE_WORKSPACE_API_TIMEOUT_MS),
+  })
+}
+
 async function readJson(response: Response): Promise<unknown> {
   const body: unknown = await response.json()
   return body
@@ -252,6 +295,15 @@ function buildCalendarEventPayload(input: z.infer<typeof createCalendarEventBody
     payload.attendees = input.attendees.map((email) => ({ email }))
   }
   return payload
+}
+
+function buildCalendarConferenceData(): CalendarConferenceData {
+  return {
+    createRequest: {
+      requestId: `openwork-${randomUUID()}`,
+      conferenceSolutionKey: { type: "hangoutsMeet" },
+    },
+  }
 }
 
 /**
@@ -297,7 +349,7 @@ export function registerGoogleWorkspaceRoutes<T extends { Variables: OrgRouteVar
       if (query.q) listUrl.searchParams.set("q", query.q)
       listUrl.searchParams.set("maxResults", String(query.maxResults))
 
-      const listResponse = await fetch(listUrl, {
+      const listResponse = await googleWorkspaceApiFetch(listUrl, {
         headers: { authorization: `Bearer ${token.accessToken}` },
       })
       if (!listResponse.ok) {
@@ -313,7 +365,7 @@ export function registerGoogleWorkspaceRoutes<T extends { Variables: OrgRouteVar
         messageUrl.searchParams.append("metadataHeaders", "To")
         messageUrl.searchParams.append("metadataHeaders", "Subject")
         messageUrl.searchParams.append("metadataHeaders", "Date")
-        const messageResponse = await fetch(messageUrl, {
+        const messageResponse = await googleWorkspaceApiFetch(messageUrl, {
           headers: { authorization: `Bearer ${token.accessToken}` },
         })
         if (!messageResponse.ok) {
@@ -370,7 +422,7 @@ export function registerGoogleWorkspaceRoutes<T extends { Variables: OrgRouteVar
       const { messageId } = c.req.valid("param")
       const messageUrl = new URL(`${gmailApiBase()}/gmail/v1/users/me/messages/${encodeURIComponent(messageId)}`)
       messageUrl.searchParams.set("format", "full")
-      const response = await fetch(messageUrl, {
+      const response = await googleWorkspaceApiFetch(messageUrl, {
         headers: { authorization: `Bearer ${token.accessToken}` },
       })
       if (!response.ok) {
@@ -420,7 +472,7 @@ export function registerGoogleWorkspaceRoutes<T extends { Variables: OrgRouteVar
       url.searchParams.set("orderBy", "startTime")
       url.searchParams.set("maxResults", String(query.maxResults))
 
-      const response = await fetch(url, {
+      const response = await googleWorkspaceApiFetch(url, {
         headers: { authorization: `Bearer ${token.accessToken}` },
       })
       if (!response.ok) {
@@ -436,7 +488,7 @@ export function registerGoogleWorkspaceRoutes<T extends { Variables: OrgRouteVar
     describeRoute({
       tags: ["Capability Sources"],
       summary: "Create a Google Calendar event as the calling member",
-      description: "Creates an event on the calling member's primary Google Calendar, using their connected Google Workspace account.",
+      description: "Creates an event on the calling member's primary Google Calendar, using their connected Google Workspace account. Set createMeetLink to true to request a Google Meet conferencing link and return meetLink.",
       responses: {
         200: jsonResponse("Google Calendar event created.", createCalendarEventResponseSchema),
         401: jsonResponse("The caller must be signed in.", unauthorizedSchema),
@@ -463,13 +515,20 @@ export function registerGoogleWorkspaceRoutes<T extends { Variables: OrgRouteVar
       }
 
       const input = c.req.valid("json")
-      const response = await fetch(`${calendarApiBase()}/calendar/v3/calendars/primary/events`, {
+      const url = new URL(`${calendarApiBase()}/calendar/v3/calendars/primary/events`)
+      const eventPayload = buildCalendarEventPayload(input)
+      if (input.createMeetLink) {
+        url.searchParams.set("conferenceDataVersion", "1")
+        eventPayload.conferenceData = buildCalendarConferenceData()
+      }
+
+      const response = await googleWorkspaceApiFetch(url, {
         method: "POST",
         headers: {
           authorization: `Bearer ${token.accessToken}`,
           "content-type": "application/json",
         },
-        body: JSON.stringify(buildCalendarEventPayload(input)),
+        body: JSON.stringify(eventPayload),
       })
       if (!response.ok) {
         return c.json(await googleApiError("Google Calendar event create", response), 502)
@@ -487,6 +546,71 @@ export function registerGoogleWorkspaceRoutes<T extends { Variables: OrgRouteVar
         summary: event.summary,
         start: event.start,
         end: event.end,
+        meetLink: event.meetLink,
+      })
+    },
+  )
+
+  app.patch(
+    "/v1/capabilities/google-workspace/calendar-event/:eventId",
+    describeRoute({
+      tags: ["Capability Sources"],
+      summary: "Add a Google Meet link to a Calendar event",
+      description: "Updates one primary-calendar event by id to request Google Meet conferencing, using the calling member's connected Google Workspace account. Use this for an existing event that needs a Meet link without creating a duplicate.",
+      responses: {
+        200: jsonResponse("Google Calendar event updated.", updateCalendarEventResponseSchema),
+        401: jsonResponse("The caller must be signed in.", unauthorizedSchema),
+        409: jsonResponse("The calling member has not connected their Google account or is missing permission.", needsConnectionSchema),
+        502: jsonResponse("Google rejected the request.", upstreamErrorSchema),
+      },
+    }),
+    orgMemberRoute(),
+    paramValidator(calendarEventParamSchema),
+    jsonValidator(updateCalendarEventBodySchema),
+    async (c) => {
+      const payload = c.get("organizationContext")
+      const token = await googleWorkspaceToken({
+        organizationId: payload.organization.id,
+        orgMembershipId: payload.currentMember.id,
+      })
+      if (token.kind === "google_api_error") {
+        return c.json({ error: "google_api_error", message: token.message }, 502)
+      }
+      if (token.kind === "needs_connection") {
+        return c.json({ error: "needs_connection", message: token.message }, 409)
+      }
+      if (missingScope(token.account, [CALENDAR_EVENTS_SCOPE])) {
+        return c.json({ error: "needs_connection", message: missingPermissionMessage("Google Calendar write") }, 409)
+      }
+
+      const { eventId } = c.req.valid("param")
+      const url = new URL(`${calendarApiBase()}/calendar/v3/calendars/primary/events/${encodeURIComponent(eventId)}`)
+      url.searchParams.set("conferenceDataVersion", "1")
+      const response = await googleWorkspaceApiFetch(url, {
+        method: "PATCH",
+        headers: {
+          authorization: `Bearer ${token.accessToken}`,
+          "content-type": "application/json",
+        },
+        body: JSON.stringify({ conferenceData: buildCalendarConferenceData() }),
+      })
+      if (!response.ok) {
+        return c.json(await googleApiError("Google Calendar event update", response), 502)
+      }
+
+      const event = extractCalendarEvents({ items: [await readJson(response)] })[0]
+      if (!event?.id) {
+        return c.json({ error: "google_api_error", message: "Google Calendar returned no event id." }, 502)
+      }
+
+      return c.json({
+        ok: true,
+        eventId: event.id,
+        htmlLink: event.htmlLink,
+        summary: event.summary,
+        start: event.start,
+        end: event.end,
+        meetLink: event.meetLink,
       })
     },
   )
@@ -528,7 +652,7 @@ export function registerGoogleWorkspaceRoutes<T extends { Variables: OrgRouteVar
       url.searchParams.set("pageSize", String(query.maxResults))
       url.searchParams.set("fields", "files(id,name,mimeType,modifiedTime,webViewLink,size)")
 
-      const response = await fetch(url, {
+      const response = await googleWorkspaceApiFetch(url, {
         headers: { authorization: `Bearer ${token.accessToken}` },
       })
       if (!response.ok) {
@@ -573,7 +697,7 @@ export function registerGoogleWorkspaceRoutes<T extends { Variables: OrgRouteVar
       const { fileId } = c.req.valid("param")
       const metadataUrl = new URL(`${driveApiBase()}/drive/v3/files/${encodeURIComponent(fileId)}`)
       metadataUrl.searchParams.set("fields", "id,name,mimeType,modifiedTime,webViewLink,size")
-      const metadataResponse = await fetch(metadataUrl, {
+      const metadataResponse = await googleWorkspaceApiFetch(metadataUrl, {
         headers: { authorization: `Bearer ${token.accessToken}` },
       })
       if (!metadataResponse.ok) {
@@ -594,7 +718,7 @@ export function registerGoogleWorkspaceRoutes<T extends { Variables: OrgRouteVar
         contentUrl.searchParams.set("alt", "media")
       }
 
-      const contentResponse = await fetch(contentUrl, {
+      const contentResponse = await googleWorkspaceApiFetch(contentUrl, {
         headers: { authorization: `Bearer ${token.accessToken}` },
       })
       if (!contentResponse.ok) {
@@ -617,12 +741,12 @@ export function registerGoogleWorkspaceRoutes<T extends { Variables: OrgRouteVar
     "/v1/capabilities/google-workspace/gmail-drafts",
     describeRoute({
       tags: ["Capability Sources"],
-      summary: "Create a Gmail draft as the calling member",
-      description: "Creates a plain-text Gmail draft in the calling member own mailbox, using the Google account they connected through the org Google Workspace connection. Returns needs_connection when the member has not connected their Google account yet.",
+      summary: "Create a Gmail draft or threaded reply draft as the calling member",
+      description: "Creates a plain-text Gmail draft in the calling member own mailbox, with optional Cc/Bcc recipients. Set threadId to attach the draft to an existing Gmail thread as a reply using the thread's matching subject. Returns needs_connection when the member has not connected their Google account yet or when a threaded reply needs Gmail read permission.",
       responses: {
         200: jsonResponse("Draft created.", createDraftResponseSchema),
         401: jsonResponse("The caller must be signed in.", unauthorizedSchema),
-        409: jsonResponse("The calling member has not connected their Google account.", needsConnectionSchema),
+        409: jsonResponse("The calling member has not connected their Google account or is missing permission.", needsConnectionSchema),
         502: jsonResponse("Google rejected the request.", upstreamErrorSchema),
       },
     }),
@@ -641,14 +765,46 @@ export function registerGoogleWorkspaceRoutes<T extends { Variables: OrgRouteVar
         return c.json({ error: "needs_connection", message: token.message }, 409)
       }
 
-      const { to, subject, body } = c.req.valid("json")
-      const response = await fetch(`${gmailApiBase()}/gmail/v1/users/me/drafts`, {
+      const { to, cc, bcc, subject, body, threadId } = c.req.valid("json")
+      const headers: { name: string; value: string }[] = []
+      if (threadId) {
+        if (missingScope(token.account, [GMAIL_READ_SCOPE])) {
+          return c.json({ error: "needs_connection", message: missingPermissionMessage("Gmail read") }, 409)
+        }
+
+        const threadUrl = new URL(`${gmailApiBase()}/gmail/v1/users/me/threads/${encodeURIComponent(threadId)}`)
+        threadUrl.searchParams.set("format", "metadata")
+        threadUrl.searchParams.append("metadataHeaders", "Message-ID")
+        threadUrl.searchParams.append("metadataHeaders", "References")
+        threadUrl.searchParams.append("metadataHeaders", "Subject")
+        const threadResponse = await googleWorkspaceApiFetch(threadUrl, {
+          headers: { authorization: `Bearer ${token.accessToken}` },
+        })
+        if (!threadResponse.ok) {
+          return c.json(await googleApiError("Gmail thread read", threadResponse), 502)
+        }
+
+        const replyContext = extractGmailThreadReplyContext(await readJson(threadResponse))
+        if (!replyContext) {
+          return c.json({ error: "google_api_error", message: "Gmail thread has no Message-ID metadata; cannot build a threaded reply draft." }, 502)
+        }
+        headers.push(
+          { name: "In-Reply-To", value: replyContext.lastMessageId },
+          { name: "References", value: replyContext.references },
+        )
+      }
+
+      const message: { raw: string; threadId?: string } = { raw: buildGmailDraftRaw({ to, cc, bcc, subject, body, headers }) }
+      if (threadId) {
+        message.threadId = threadId
+      }
+      const response = await googleWorkspaceApiFetch(`${gmailApiBase()}/gmail/v1/users/me/drafts`, {
         method: "POST",
         headers: {
           authorization: `Bearer ${token.accessToken}`,
           "content-type": "application/json",
         },
-        body: JSON.stringify({ message: { raw: buildGmailDraftRaw({ to, subject, body }) } }),
+        body: JSON.stringify({ message }),
       })
       const text = await response.text()
       if (!response.ok) {
@@ -660,7 +816,7 @@ export function registerGoogleWorkspaceRoutes<T extends { Variables: OrgRouteVar
         return c.json({ error: "google_api_error", message: "Gmail returned no draft id." }, 502)
       }
 
-      return c.json({ ok: true, draftId, messageId, to, subject })
+      return c.json({ ok: true, draftId, messageId, to, subject, threadId: threadId ?? null })
     },
   )
 }
