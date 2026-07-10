@@ -76,6 +76,8 @@ type DenFlowContextValue = {
   setAuthMode: (mode: AuthMode) => void;
   email: string;
   setEmail: (value: string) => void;
+  authName: string;
+  setAuthName: (value: string) => void;
   password: string;
   setPassword: (value: string) => void;
   verificationCode: string;
@@ -192,6 +194,7 @@ function clearPendingAuthIntent() {
 export function DenFlowProvider({ children }: { children: ReactNode }) {
   const [authMode, setAuthModeState] = useState<AuthMode>("sign-up");
   const [email, setEmail] = useState("");
+  const [authName, setAuthName] = useState("");
   const [password, setPassword] = useState("");
   const [verificationCode, setVerificationCode] = useState("");
   const [verificationRequired, setVerificationRequired] = useState(false);
@@ -1075,7 +1078,7 @@ export function DenFlowProvider({ children }: { children: ReactNode }) {
       const body =
         authMode === "sign-up"
           ? {
-              name: DEFAULT_AUTH_NAME,
+              name: authName.trim() || DEFAULT_AUTH_NAME,
               email: trimmedEmail,
               password
             }
@@ -1274,6 +1277,7 @@ export function DenFlowProvider({ children }: { children: ReactNode }) {
     setDesktopRedirectAttempted(false);
     setAuthMode("sign-up");
     setEmail("");
+    setAuthName("");
     setPassword("");
     setAuthInfo(getAuthInfoForMode("sign-up"));
     setLaunchStatus("Choose a worker name and launch.");
@@ -2087,6 +2091,8 @@ export function DenFlowProvider({ children }: { children: ReactNode }) {
     setAuthMode,
     email,
     setEmail,
+    authName,
+    setAuthName,
     password,
     setPassword,
     verificationCode,
