@@ -188,6 +188,76 @@ function toArrayBuffer(buffer: Buffer) {
   return bytes.buffer
 }
 
+function createStoredZipChunks(entries: Array<{ name: string; content: Buffer }>) {
+  if (entries.length === 0) {
+    const eocd = createEndOfCentralDirectory(0, 0, 0, Buffer.alloc(0))
+    return { chunks: [eocd], byteLength: eocd.length }
+  }
+
+  const localChunks: Buffer[] = []
+  const centralDirectoryChunks: Buffer[] = []
+  let localHeaderOffset = 0
+  const { time, date } = dosTimestamp()
+
+  for (const entry of entries) {
+    const entryName = Buffer.from(entry.name, "utf8")
+    const checksum = crc32(entry.content)
+    const localHeader = createLocalHeader(entryName, entry.content, time, date, checksum)
+    localChunks.push(localHeader, entry.content)
+    centralDirectoryChunks.push(
+      createCentralDirectoryHeader(entryName, entry.content, localHeaderOffset, time, date, checksum),
+    )
+    localHeaderOffset += localHeader.length + entry.content.length
+  }
+
+  const centralDirectorySize = centralDirectoryChunks.reduce((total, chunk) => total + chunk.length, 0)
+  const eocd = createEndOfCentralDirectory(entries.length, centralDirectorySize, localHeaderOffset, Buffer.alloc(0))
+  return {
+    chunks: [...localChunks, ...centralDirectoryChunks, eocd],
+    byteLength: localHeaderOffset + centralDirectorySize + eocd.length,
+  }
+}
+
+export function createStoredZip(entries: Array<{ name: string; content: Buffer }>): ArrayBuffer {
+  const archive = createStoredZipChunks(entries)
+  const output = Buffer.alloc(archive.byteLength)
+  let outputOffset = 0
+
+  for (const chunk of archive.chunks) {
+    writeBytes(output, chunk, outputOffset)
+    outputOffset += chunk.length
+  }
+
+  return toArrayBuffer(output)
+}
+
+export function createStoredZipStream(entries: Array<{ name: string; content: Buffer }>) {
+  const archive = createStoredZipChunks(entries)
+  const maxChunkSize = 1024 * 1024
+  let chunkIndex = 0
+  let chunkOffset = 0
+
+  const body = new ReadableStream<Uint8Array>({
+    pull(controller) {
+      while (chunkIndex < archive.chunks.length) {
+        const chunk = archive.chunks[chunkIndex]
+        if (chunkOffset >= chunk.length) {
+          chunkIndex += 1
+          chunkOffset = 0
+          continue
+        }
+        const end = Math.min(chunk.length, chunkOffset + maxChunkSize)
+        controller.enqueue(Uint8Array.from(chunk.subarray(chunkOffset, end)))
+        chunkOffset = end
+        return
+      }
+      controller.close()
+    },
+  })
+
+  return { body, byteLength: archive.byteLength }
+}
+
 export function appendStoredEntryToZip(sourceZip: Buffer, entryNameInput: string, contentInput: Buffer): ArrayBuffer {
   const source = sourceZip
   const entryName = Buffer.from(entryNameInput, "utf8")
