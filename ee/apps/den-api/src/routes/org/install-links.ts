@@ -12,21 +12,22 @@ import { resolvePublicOrigin } from "../../capability-sources/generic-oauth.js"
 import { db } from "../../db.js"
 import { env } from "../../env.js"
 import { jsonValidator, orgRoleRoute, publicRoute, queryValidator } from "../../middleware/index.js"
-import { denTypeIdSchema, forbiddenSchema, invalidRequestSchema, jsonResponse, notFoundSchema, textResponse, unauthorizedSchema } from "../../openapi.js"
+import { denTypeIdSchema, emptyResponse, forbiddenSchema, invalidRequestSchema, jsonResponse, notFoundSchema, textResponse, unauthorizedSchema } from "../../openapi.js"
 import { organizationCapabilityKeySchema, organizationHasCapability } from "../../organization-capabilities.js"
 import { normalizeOrganizationMetadata } from "../../organization-limits.js"
-import { resolveInstallerArtifact } from "../../utils/installer-artifacts.js"
+import { installerReleaseAssetUrl, resolveInstallerArtifact } from "../../utils/installer-artifacts.js"
 import { appendStoredEntryToZip } from "../../utils/zip-append.js"
 import type { OrgRouteVariables } from "./shared.js"
-import { ensureInviteManager, orgAccessFailureStatus } from "./shared.js"
+import { ensureOrganizationAdmin, orgAccessFailureStatus } from "./shared.js"
 
 const INSTALL_LINK_RATE_LIMIT_WINDOW_MS = 1000 * 60 * 60
+const INSTALL_LINK_MINT_RATE_LIMIT_MAX = 30
 const INSTALL_CONFIG_RATE_LIMIT_MAX = 60
 const INSTALL_ARTIFACT_RATE_LIMIT_MAX = 20
 const INSTALL_LINK_TOKEN_PATTERN = /^[A-Za-z0-9_-]{8,}$/
 
 const createInstallLinkBodySchema = z.object({
-  rotate: z.boolean().optional(),
+  rotate: z.boolean().optional().default(false),
 }).meta({ ref: "CreateInstallLinkRequest" })
 
 const createInstallLinkResponseSchema = z.object({
@@ -53,17 +54,22 @@ const capabilityDisabledSchema = z.object({
   capability: organizationCapabilityKeySchema,
 }).meta({ ref: "CapabilityDisabledError" })
 
-const installerArtifactsUnavailableSchema = z.object({
-  error: z.literal("installer_artifacts_unavailable"),
-  message: z.string(),
-}).meta({ ref: "InstallerArtifactsUnavailableError" })
-
 const rateLimitedSchema = z.object({
   error: z.literal("rate_limited"),
   message: z.string(),
 }).meta({ ref: "RateLimitedError" })
 
 type InstallPlatform = z.infer<typeof installPlatformSchema>
+
+type InstallerDependencies = {
+  resolveArtifact: typeof resolveInstallerArtifact
+  releaseAssetUrl: typeof installerReleaseAssetUrl
+}
+
+const defaultInstallerDependencies: InstallerDependencies = {
+  resolveArtifact: resolveInstallerArtifact,
+  releaseAssetUrl: installerReleaseAssetUrl,
+}
 
 function sha256(value: string) {
   return createHash("sha256").update(value).digest("hex")
@@ -175,13 +181,6 @@ function artifactFileName(platform: InstallPlatform) {
       : null
 }
 
-function installerArtifactsUnavailable() {
-  return {
-    error: "installer_artifacts_unavailable",
-    message: `Installer artifacts are unavailable in this environment (tried release ${env.installerReleaseTag}). They ship with the OpenWork release pipeline.`,
-  }
-}
-
 function encodeHostForFilename(apiUrl: string) {
   return new URL(apiUrl).host.replace(/:/g, "_")
 }
@@ -261,30 +260,29 @@ const setActiveOrganizationFromParam: MiddlewareHandler<{ Variables: OrgRouteVar
   await next()
 }
 
-export function registerOrgInstallLinkRoutes<T extends { Variables: OrgRouteVariables }>(app: Hono<T>) {
+export function registerOrgInstallLinkRoutes<T extends { Variables: OrgRouteVariables }>(
+  app: Hono<T>,
+  installer: InstallerDependencies = defaultInstallerDependencies,
+) {
   app.post(
     "/v1/orgs/:organizationId/install-links",
     describeRoute({
       tags: ["Organizations"],
       summary: "Create organization install link",
-      description: "Mints a shareable OpenWork desktop install link for this organization. By default, older active install links for the organization are revoked.",
+      description: "Mints a shareable OpenWork desktop install link for a signed-in organization member. Older active links remain valid unless an owner or admin explicitly requests rotation.",
       responses: {
         200: jsonResponse("Install link created successfully.", createInstallLinkResponseSchema),
         400: jsonResponse("The install-link request was invalid.", invalidRequestSchema),
         401: jsonResponse("The caller must be signed in to create install links.", unauthorizedSchema),
-        403: jsonResponse("Only workspace owners and admins can create install links, and the organization needs the installLinks capability enabled.", forbiddenSchema.or(capabilityDisabledSchema)),
+        403: jsonResponse("The organization needs the installLinks capability enabled, and only workspace owners and admins can rotate existing links.", forbiddenSchema.or(capabilityDisabledSchema)),
         404: jsonResponse("The organization could not be found.", notFoundSchema),
+        429: jsonResponse("The member has created too many install links.", rateLimitedSchema),
       },
     }),
     setActiveOrganizationFromParam,
-    orgRoleRoute(["admin"]),
+    orgRoleRoute(["member"]),
     jsonValidator(createInstallLinkBodySchema),
     async (c) => {
-      const permission = ensureInviteManager(c)
-      if (!permission.ok) {
-        return c.json(permission.response, orgAccessFailureStatus(permission.response))
-      }
-
       const input = c.req.valid("json")
       const payload = c.get("organizationContext")
 
@@ -293,10 +291,28 @@ export function registerOrgInstallLinkRoutes<T extends { Variables: OrgRouteVari
       if (!organizationHasCapability(payload.organization.metadata, "installLinks")) {
         return c.json({ error: "capability_disabled", capability: "installLinks" }, 403)
       }
-      const now = new Date()
+
+      if (input.rotate) {
+        const permission = ensureOrganizationAdmin(c, "Only workspace owners and admins can rotate install links.")
+        if (!permission.ok) {
+          return c.json(permission.response, orgAccessFailureStatus(permission.response))
+        }
+      }
+
+      const retryAfter = await checkRateLimit(
+        `install:mint:user:${payload.currentMember.userId}`,
+        INSTALL_LINK_MINT_RATE_LIMIT_MAX,
+        Date.now(),
+      )
+      if (retryAfter !== null) {
+        c.header("Retry-After", String(retryAfter))
+        return c.json({ error: "rate_limited", message: "Too many install links created. Try again later." }, 429)
+      }
+
       const token = randomBytes(32).toString("base64url")
 
-      if (input.rotate !== false) {
+      if (input.rotate) {
+        const now = new Date()
         await db
           .update(InstallLinkTable)
           .set({ revokedAt: now })
@@ -359,13 +375,13 @@ export function registerOrgInstallLinkRoutes<T extends { Variables: OrgRouteVari
     describeRoute({
       tags: ["Organizations"],
       summary: "Download stamped installer",
-      description: "Serves the generic OpenWork installer artifact stamped at download time for this organization.",
+      description: "Serves the generic OpenWork installer artifact stamped at download time for this organization, or redirects to the official release asset when Den cannot prepare it.",
       responses: {
         200: textResponse("Installer artifact returned successfully."),
+        302: emptyResponse("Den redirected the browser to the official release asset."),
         400: jsonResponse("The install-link token or platform was invalid.", invalidRequestSchema),
         404: jsonResponse("The install link was missing, expired, or revoked.", installLinkNotFoundSchema),
         429: jsonResponse("Too many installer download attempts.", rateLimitedSchema),
-        503: jsonResponse("Installer artifacts are unavailable in this environment.", installerArtifactsUnavailableSchema),
       },
     }),
     publicRoute,
@@ -401,12 +417,12 @@ export function registerOrgInstallLinkRoutes<T extends { Variables: OrgRouteVari
 
       const fileName = artifactFileName(platform)
       if (!fileName) {
-        return c.json(installerArtifactsUnavailable(), 503)
+        return c.json({ error: "invalid_request", details: [{ message: "Unsupported installer platform." }] }, 400)
       }
 
-      const artifact = await resolveInstallerArtifact(fileName)
+      const artifact = await installer.resolveArtifact(fileName)
       if (!artifact) {
-        return c.json(installerArtifactsUnavailable(), 503)
+        return c.redirect(installer.releaseAssetUrl(fileName), 302)
       }
 
       if (platform.startsWith("mac-")) {
