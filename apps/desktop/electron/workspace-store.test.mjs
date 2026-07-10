@@ -34,14 +34,16 @@ async function withIsolatedBootstrapStore(callback) {
 
   try {
     const module = await import(`./workspace-store.mjs?bootstrap-test=${Date.now()}-${Math.random()}`);
-    const store = module.createWorkspaceStore({
+    const createStore = () => module.createWorkspaceStore({
       app: { getPath: (name) => name === "userData" ? path.join(root, "userData") : root },
       defaultDenBaseUrl: "https://default.example.com",
       defaultRequireSignin: false,
       forceRequireSignin: false,
     });
+    const store = createStore();
     return await callback({
       store,
+      createStore,
       canonicalPath: path.join(xdg, "openwork", "desktop-bootstrap.json"),
       legacyPath: path.join(home, ".config", "openwork", "desktop-bootstrap.json"),
       root,
@@ -251,6 +253,70 @@ test("desktop bootstrap migrates a newer legacy writtenAt to canonical", async (
   });
 });
 
+test("desktop bootstrap prefers an older legacy organization config over a newer canonical hosted default", async () => {
+  await withIsolatedBootstrapStore(async ({ store, canonicalPath, legacyPath }) => {
+    await writeBootstrapConfig(canonicalPath, {
+      baseUrl: "https://app.openworklabs.com/api/den/",
+      apiBaseUrl: "https://api.unrelated.example",
+      requireSignin: false,
+      writtenAt: "2026-07-10T13:00:00.000Z",
+    });
+    await writeBootstrapConfig(legacyPath, {
+      baseUrl: "https://openwork.organization.internal.example",
+      apiBaseUrl: "https://api.organization.internal.example",
+      requireSignin: true,
+      writtenAt: "2026-07-09T12:00:00.000Z",
+    });
+
+    const config = await store.getDesktopBootstrapConfig();
+    assert.equal(config.baseUrl, "https://openwork.organization.internal.example");
+    const migrated = JSON.parse(await readFile(canonicalPath, "utf8"));
+    assert.equal(migrated.baseUrl, "https://openwork.organization.internal.example");
+  });
+});
+
+test("desktop bootstrap keeps an older canonical organization config over a newer legacy hosted default", async () => {
+  await withIsolatedBootstrapStore(async ({ store, canonicalPath, legacyPath }) => {
+    await writeBootstrapConfig(canonicalPath, {
+      baseUrl: "https://openwork.organization.internal.example",
+      apiBaseUrl: "https://api.organization.internal.example",
+      requireSignin: true,
+      writtenAt: "2026-07-09T12:00:00.000Z",
+    });
+    await writeBootstrapConfig(legacyPath, {
+      baseUrl: "https://api.openworklabs.com/v1/",
+      apiBaseUrl: "https://api.unrelated.example",
+      requireSignin: false,
+      writtenAt: "2026-07-10T13:00:00.000Z",
+    });
+
+    const config = await store.getDesktopBootstrapConfig();
+    assert.equal(config.baseUrl, "https://openwork.organization.internal.example");
+    const persisted = JSON.parse(await readFile(canonicalPath, "utf8"));
+    assert.equal(persisted.baseUrl, "https://openwork.organization.internal.example");
+  });
+});
+
+test("desktop bootstrap ignores a newer malformed canonical config when legacy is valid", async () => {
+  await withIsolatedBootstrapStore(async ({ store, canonicalPath, legacyPath }) => {
+    await writeBootstrapConfig(legacyPath, {
+      baseUrl: "https://legacy.organization.internal.example",
+      requireSignin: true,
+    });
+    await mkdir(path.dirname(canonicalPath), { recursive: true });
+    await writeFile(canonicalPath, "{ malformed", "utf8");
+    const older = new Date("2026-07-09T12:00:00.000Z");
+    const newer = new Date("2026-07-10T12:00:00.000Z");
+    await utimes(legacyPath, older, older);
+    await utimes(canonicalPath, newer, newer);
+
+    const config = await store.getDesktopBootstrapConfig();
+    assert.equal(config.baseUrl, "https://legacy.organization.internal.example");
+    const migrated = JSON.parse(await readFile(canonicalPath, "utf8"));
+    assert.equal(migrated.baseUrl, "https://legacy.organization.internal.example");
+  });
+});
+
 test("desktop bootstrap falls back to mtime when writtenAt is missing", async () => {
   await withIsolatedBootstrapStore(async ({ store, canonicalPath, legacyPath }) => {
     await writeBootstrapConfig(canonicalPath, {
@@ -285,33 +351,49 @@ test("desktop bootstrap writes include a fresh writtenAt stamp", async () => {
   });
 });
 
-test("imports a newer organization bootstrap beside the standard installer", async () => {
+test("imports the newest organization bootstrap beside a Windows installer when config is absent", async () => {
   await withIsolatedBootstrapStore(async ({ store, canonicalPath, root }) => {
-    const bundleDir = path.join(root, "downloads", "OpenWork-acme");
+    const bundleDir = path.join(root, "downloads", "OpenWork-example-org");
+    const olderBundleDir = path.join(bundleDir, "older");
+    const newerBundleDir = path.join(bundleDir, "latest");
     process.env.OPENWORK_BOOTSTRAP_BUNDLE_DIR = bundleDir;
-    await mkdir(bundleDir, { recursive: true });
-    await writeFile(path.join(bundleDir, "openwork-mac-arm64-9.9.9.dmg"), "signed installer", "utf8");
+    await mkdir(olderBundleDir, { recursive: true });
+    await mkdir(newerBundleDir, { recursive: true });
+    await writeFile(path.join(bundleDir, "openwork-win-x64-10.0.0.exe"), "signed installer", "utf8");
     await writeBootstrapConfig(path.join(bundleDir, "desktop-bootstrap.json"), {
-      baseUrl: "https://acme.example.com",
-      apiBaseUrl: "https://api.acme.example.com",
+      baseUrl: "https://app.openworklabs.com/",
+      apiBaseUrl: "https://api.openworklabs.com/",
+      requireSignin: false,
+      writtenAt: "2026-07-10T13:00:00.000Z",
+    });
+    await writeFile(path.join(olderBundleDir, "openwork-win-x64-9.9.8.exe"), "signed installer", "utf8");
+    await writeBootstrapConfig(path.join(olderBundleDir, "desktop-bootstrap.json"), {
+      baseUrl: "https://older.internal.example",
       requireSignin: true,
-      brandAppName: "Acme Work",
-      brandLogoUrl: "https://acme.example.com/logo.png",
+      writtenAt: "2026-07-10T11:00:00.000Z",
+    });
+    await writeFile(path.join(newerBundleDir, "openwork-win-x64-9.9.9.exe"), "signed installer", "utf8");
+    await writeBootstrapConfig(path.join(newerBundleDir, "desktop-bootstrap.json"), {
+      baseUrl: "https://openwork.internal.example",
+      apiBaseUrl: "https://api.openwork.internal.example",
+      requireSignin: true,
+      brandAppName: "Example Org Work",
+      brandLogoUrl: "https://openwork.internal.example/logo.png",
       writtenAt: "2026-07-10T12:00:00.000Z",
     });
 
-    assert.equal(await store.importBundledDesktopBootstrapConfigIfNewer(), true);
+    assert.equal(await store.importBundledDesktopBootstrapConfigIfPreferred(), true);
     const config = await store.getDesktopBootstrapConfig();
     assert.deepEqual(config, {
-      baseUrl: "https://acme.example.com",
-      apiBaseUrl: "https://api.acme.example.com",
+      baseUrl: "https://openwork.internal.example",
+      apiBaseUrl: "https://api.openwork.internal.example",
       requireSignin: true,
-      brandAppName: "Acme Work",
-      brandLogoUrl: "https://acme.example.com/logo.png",
+      brandAppName: "Example Org Work",
+      brandLogoUrl: "https://openwork.internal.example/logo.png",
       writtenAt: "2026-07-10T12:00:00.000Z",
     });
     const persisted = JSON.parse(await readFile(canonicalPath, "utf8"));
-    assert.equal(persisted.baseUrl, "https://acme.example.com");
+    assert.equal(persisted.baseUrl, "https://openwork.internal.example");
   });
 });
 
@@ -325,31 +407,92 @@ test("ignores a downloaded bootstrap that is not beside a standard installer", a
       writtenAt: "2026-07-10T12:00:00.000Z",
     });
 
-    assert.equal(await store.importBundledDesktopBootstrapConfigIfNewer(), false);
+    assert.equal(await store.importBundledDesktopBootstrapConfigIfPreferred(), false);
     await assert.rejects(readFile(canonicalPath, "utf8"));
   });
 });
 
-test("does not replace a newer canonical bootstrap with an older download bundle", async () => {
+test("keeps an installed organization bootstrap across a newer Windows installer bundle and restart", async () => {
+  await withIsolatedBootstrapStore(async ({ store, createStore, canonicalPath, root }) => {
+    const bundleDir = path.join(root, "downloads");
+    process.env.OPENWORK_BOOTSTRAP_BUNDLE_DIR = bundleDir;
+    await writeBootstrapConfig(canonicalPath, {
+      baseUrl: "https://openwork.organization.internal.example",
+      requireSignin: true,
+      writtenAt: "2026-07-09T12:00:00.000Z",
+    });
+    await mkdir(bundleDir, { recursive: true });
+    await writeFile(path.join(bundleDir, "openwork-win-x64-9.9.9.exe"), "signed installer", "utf8");
+    await writeBootstrapConfig(path.join(bundleDir, "desktop-bootstrap.json"), {
+      baseUrl: "https://app.openworklabs.com/",
+      apiBaseUrl: "https://api.openworklabs.com/",
+      requireSignin: false,
+      writtenAt: "2026-07-10T12:00:00.000Z",
+    });
+
+    assert.equal(await store.importBundledDesktopBootstrapConfigIfPreferred(), false);
+    const config = await store.getDesktopBootstrapConfig();
+    assert.equal(config.baseUrl, "https://openwork.organization.internal.example");
+
+    const restartedStore = createStore();
+    assert.equal(await restartedStore.importBundledDesktopBootstrapConfigIfPreferred(), false);
+    const restartedConfig = await restartedStore.getDesktopBootstrapConfig();
+    assert.equal(restartedConfig.baseUrl, "https://openwork.organization.internal.example");
+    const persisted = JSON.parse(await readFile(canonicalPath, "utf8"));
+    assert.equal(persisted.baseUrl, "https://openwork.organization.internal.example");
+  });
+});
+
+test("keeps and migrates an installed legacy bootstrap beside a newer Windows installer bundle", async () => {
+  await withIsolatedBootstrapStore(async ({ store, canonicalPath, legacyPath, root }) => {
+    const bundleDir = path.join(root, "downloads");
+    process.env.OPENWORK_BOOTSTRAP_BUNDLE_DIR = bundleDir;
+    await writeBootstrapConfig(legacyPath, {
+      baseUrl: "https://legacy.organization.internal.example",
+      requireSignin: true,
+      writtenAt: "2026-07-09T12:00:00.000Z",
+    });
+    await mkdir(bundleDir, { recursive: true });
+    await writeFile(path.join(bundleDir, "openwork-win-x64-9.9.9.exe"), "signed installer", "utf8");
+    await writeBootstrapConfig(path.join(bundleDir, "desktop-bootstrap.json"), {
+      baseUrl: "https://app.openworklabs.com/",
+      apiBaseUrl: "https://api.openworklabs.com/",
+      requireSignin: false,
+      writtenAt: "2026-07-10T12:00:00.000Z",
+    });
+
+    assert.equal(await store.importBundledDesktopBootstrapConfigIfPreferred(), false);
+    const config = await store.getDesktopBootstrapConfig();
+    assert.equal(config.baseUrl, "https://legacy.organization.internal.example");
+    const migrated = JSON.parse(await readFile(canonicalPath, "utf8"));
+    assert.equal(migrated.baseUrl, "https://legacy.organization.internal.example");
+  });
+});
+
+test("replaces an installed hosted default with a custom organization Windows bundle", async () => {
   await withIsolatedBootstrapStore(async ({ store, canonicalPath, root }) => {
     const bundleDir = path.join(root, "downloads");
     process.env.OPENWORK_BOOTSTRAP_BUNDLE_DIR = bundleDir;
     await writeBootstrapConfig(canonicalPath, {
-      baseUrl: "https://current.example.com",
-      requireSignin: true,
+      baseUrl: "https://app.openworklabs.com/",
+      apiBaseUrl: "https://api.openworklabs.com/",
+      requireSignin: false,
       writtenAt: "2026-07-10T13:00:00.000Z",
     });
     await mkdir(bundleDir, { recursive: true });
     await writeFile(path.join(bundleDir, "openwork-win-x64-9.9.9.exe"), "signed installer", "utf8");
     await writeBootstrapConfig(path.join(bundleDir, "desktop-bootstrap.json"), {
-      baseUrl: "https://old.example.com",
+      baseUrl: "https://custom.organization.internal.example",
+      apiBaseUrl: "https://api.custom.organization.internal.example",
       requireSignin: true,
-      writtenAt: "2026-07-10T12:00:00.000Z",
+      writtenAt: "2026-07-09T12:00:00.000Z",
     });
 
-    assert.equal(await store.importBundledDesktopBootstrapConfigIfNewer(), false);
+    assert.equal(await store.importBundledDesktopBootstrapConfigIfPreferred(), true);
     const config = await store.getDesktopBootstrapConfig();
-    assert.equal(config.baseUrl, "https://current.example.com");
+    assert.equal(config.baseUrl, "https://custom.organization.internal.example");
+    const persisted = JSON.parse(await readFile(canonicalPath, "utf8"));
+    assert.equal(persisted.baseUrl, "https://custom.organization.internal.example");
   });
 });
 
