@@ -14,17 +14,21 @@ const memberId = createDenTypeId("member")
 const organizationId = createDenTypeId("organization")
 const insertedRows: unknown[] = []
 const revokedRows: unknown[] = []
-const officialWindowsInstallerUrl = "https://github.com/different-ai/openwork/releases/download/v9.9.9/openwork-installer-win-x64.exe"
+const officialWindowsInstallerUrl = "https://github.com/different-ai/openwork/releases/download/v9.9.9/openwork-win-x64-9.9.9.exe"
 
 let role = "member"
 let isOwner = false
 let capabilityEnabled = true
+let failInstallLinkInsert = false
 let sessionCreatedAt = new Date()
 
 mock.module("../src/db.js", () => ({
   db: {
     insert: (_table: unknown) => ({
       values: (values: unknown) => {
+        if (failInstallLinkInsert && isRecord(values) && typeof values.tokenHash === "string") {
+          return Promise.reject(new Error("install link storage unavailable"))
+        }
         insertedRows.push(values)
         return Promise.resolve()
       },
@@ -103,9 +107,11 @@ mock.module("../src/orgs.js", () => ({
 }))
 
 let installLinkModule: typeof import("../src/routes/org/install-links.js")
+let installLinkMintingModule: typeof import("../src/install-links.js")
 
 beforeAll(async () => {
   seedRequiredEnv()
+  installLinkMintingModule = await import("../src/install-links.js")
   installLinkModule = await import("../src/routes/org/install-links.js")
 })
 
@@ -115,11 +121,13 @@ beforeEach(() => {
   role = "member"
   isOwner = false
   capabilityEnabled = true
+  failInstallLinkInsert = false
   sessionCreatedAt = new Date()
 })
 
-function createApp(options: { installerUnavailable?: boolean } = {}) {
+function createApp(options: { installerFallbackUrl?: string } = {}) {
   const app = new Hono()
+  const installerFallbackUrl = options.installerFallbackUrl
   app.use("*", async (c, next) => {
     c.set("user", {
       id: userId,
@@ -139,10 +147,10 @@ function createApp(options: { installerUnavailable?: boolean } = {}) {
   })
   installLinkModule.registerOrgInstallLinkRoutes(
     app,
-    options.installerUnavailable
+    installerFallbackUrl
       ? {
           resolveArtifact: () => Promise.resolve(null),
-          releaseAssetUrl: (fileName: string) => `https://github.com/different-ai/openwork/releases/download/v9.9.9/${fileName}`,
+          resolveFallbackUrl: () => Promise.resolve(installerFallbackUrl),
         }
       : undefined,
   )
@@ -209,6 +217,51 @@ test("the organization capability still gates member install links", async () =>
   expect(insertedInstallLinks()).toHaveLength(0)
 })
 
+test("invitation downloads mint the same org install page without storing the raw token", async () => {
+  const downloadUrl = await installLinkMintingModule.resolveInvitationDownloadUrl({
+    organizationId,
+    createdByUserId: userId,
+    metadata: { capabilities: { installLinks: true } },
+  })
+
+  const url = new URL(downloadUrl)
+  const token = url.searchParams.get("token")
+  const rows = insertedInstallLinks()
+
+  expect(url.pathname).toBe("/install")
+  expect(url.origin).toBe(new URL(process.env.BETTER_AUTH_URL ?? "http://127.0.0.1:8790").origin)
+  expect(token).toBeTruthy()
+  expect(rows).toHaveLength(1)
+  expect(rows[0]).not.toHaveProperty("token")
+  expect(rows[0]).not.toHaveProperty("installPageUrl")
+  expect(isRecord(rows[0]) ? rows[0].tokenHash : null).toBe(installLinkMintingModule.hashInstallLinkToken(token ?? ""))
+  expect(revokedRows).toHaveLength(0)
+})
+
+test("invitation downloads keep the generic URL when install links are disabled", async () => {
+  const downloadUrl = await installLinkMintingModule.resolveInvitationDownloadUrl({
+    organizationId,
+    createdByUserId: userId,
+    metadata: { capabilities: { installLinks: false } },
+  })
+
+  expect(downloadUrl).toBe("https://openworklabs.com/download")
+  expect(insertedInstallLinks()).toHaveLength(0)
+})
+
+test("invitation delivery can fall back when install-link storage fails", async () => {
+  failInstallLinkInsert = true
+
+  const downloadUrl = await installLinkMintingModule.resolveInvitationDownloadUrl({
+    organizationId,
+    createdByUserId: userId,
+    metadata: { capabilities: { installLinks: true } },
+  })
+
+  expect(downloadUrl).toBe("https://openworklabs.com/download")
+  expect(insertedInstallLinks()).toHaveLength(0)
+})
+
 test("members cannot mint an install link for another organization", async () => {
   const otherOrganizationId = createDenTypeId("organization")
   const response = await createApp().request(`http://den.local/v1/orgs/${otherOrganizationId}/install-links`, {
@@ -223,10 +276,11 @@ test("members cannot mint an install link for another organization", async () =>
 })
 
 test("missing server-side artifacts redirect the browser to the official release", async () => {
-  const response = await createApp({ installerUnavailable: true }).request("http://den.local/v1/install/win-x64?token=opaque-token", {
+  const response = await createApp({ installerFallbackUrl: officialWindowsInstallerUrl }).request("http://den.local/v1/install/win-x64?token=opaque-token", {
     redirect: "manual",
   })
 
   expect(response.status).toBe(302)
   expect(response.headers.get("location")).toBe(officialWindowsInstallerUrl)
+  expect(response.headers.get("location")).not.toContain("opaque-token")
 })

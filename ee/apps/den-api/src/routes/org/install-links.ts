@@ -2,7 +2,6 @@ import { installConfigSchema, INSTALL_SIDECAR_FILENAME } from "@openwork/install
 import { and, eq, gt, isNull, or } from "@openwork-ee/den-db/drizzle"
 import { InstallLinkTable, OrganizationTable, RateLimitTable } from "@openwork-ee/den-db/schema"
 import { createDenTypeId } from "@openwork-ee/utils/typeid"
-import { createHash, randomBytes } from "node:crypto"
 import type { MiddlewareHandler } from "hono"
 import type { Hono } from "hono"
 import { describeRoute } from "hono-openapi"
@@ -11,11 +10,12 @@ import { OPENWORK_DOWNLOAD_URL } from "../../CONSTS.js"
 import { resolvePublicOrigin } from "../../capability-sources/generic-oauth.js"
 import { db } from "../../db.js"
 import { env } from "../../env.js"
+import { hashInstallLinkToken, mintOrganizationInstallLink } from "../../install-links.js"
 import { jsonValidator, orgRoleRoute, publicRoute, queryValidator } from "../../middleware/index.js"
 import { denTypeIdSchema, emptyResponse, forbiddenSchema, invalidRequestSchema, jsonResponse, notFoundSchema, textResponse, unauthorizedSchema } from "../../openapi.js"
 import { organizationCapabilityKeySchema, organizationHasCapability } from "../../organization-capabilities.js"
 import { normalizeOrganizationMetadata } from "../../organization-limits.js"
-import { installerReleaseAssetUrl, resolveInstallerArtifact } from "../../utils/installer-artifacts.js"
+import { resolveInstallerArtifact, resolveInstallerFallbackUrl } from "../../utils/installer-artifacts.js"
 import { appendStoredEntryToZip } from "../../utils/zip-append.js"
 import type { OrgRouteVariables } from "./shared.js"
 import { ensureOrganizationAdmin, orgAccessFailureStatus } from "./shared.js"
@@ -63,16 +63,12 @@ type InstallPlatform = z.infer<typeof installPlatformSchema>
 
 type InstallerDependencies = {
   resolveArtifact: typeof resolveInstallerArtifact
-  releaseAssetUrl: typeof installerReleaseAssetUrl
+  resolveFallbackUrl: (platform: string) => Promise<string>
 }
 
 const defaultInstallerDependencies: InstallerDependencies = {
   resolveArtifact: resolveInstallerArtifact,
-  releaseAssetUrl: installerReleaseAssetUrl,
-}
-
-function sha256(value: string) {
-  return createHash("sha256").update(value).digest("hex")
+  resolveFallbackUrl: (platform) => resolveInstallerFallbackUrl(platform, OPENWORK_DOWNLOAD_URL),
 }
 
 function requestAddress(headers: Headers) {
@@ -112,10 +108,6 @@ async function enforceRateLimit(headers: Headers, scope: string, maxRequests: nu
   return checkRateLimit(`install:${scope}:${requestAddress(headers)}`, maxRequests, Date.now())
 }
 
-function installPageUrl(token: string) {
-  return new URL(`/install?token=${encodeURIComponent(token)}`, env.betterAuthUrl).toString()
-}
-
 function organizationMetadataInput(value: unknown): Record<string, unknown> | string | null {
   if (typeof value === "string" || value === null) {
     return value
@@ -136,7 +128,7 @@ function buildInstallConfig(input: { organization: { name: string; logo: string 
 }
 
 async function resolveInstallConfigForToken(token: string, request: Request) {
-  const tokenHash = sha256(token)
+  const tokenHash = hashInstallLinkToken(token)
   const now = new Date()
   const [row] = await db
     .select({ installLink: InstallLinkTable, organization: OrganizationTable })
@@ -309,32 +301,18 @@ export function registerOrgInstallLinkRoutes<T extends { Variables: OrgRouteVari
         return c.json({ error: "rate_limited", message: "Too many install links created. Try again later." }, 429)
       }
 
-      const token = randomBytes(32).toString("base64url")
-
-      if (input.rotate) {
-        const now = new Date()
-        await db
-          .update(InstallLinkTable)
-          .set({ revokedAt: now })
-          .where(
-            and(
-              eq(InstallLinkTable.organizationId, payload.organization.id),
-              isNull(InstallLinkTable.revokedAt),
-              or(isNull(InstallLinkTable.expiresAt), gt(InstallLinkTable.expiresAt, now)),
-            ),
-          )
-      }
-
-      await db.insert(InstallLinkTable).values({
-        id: createDenTypeId("installLink"),
+      const installLink = await mintOrganizationInstallLink({
         organizationId: payload.organization.id,
-        tokenHash: sha256(token),
         createdByUserId: payload.currentMember.userId,
-        expiresAt: null,
-        revokedAt: null,
+        metadata: payload.organization.metadata,
+        rotate: input.rotate,
       })
 
-      return c.json({ token, installPageUrl: installPageUrl(token) })
+      if (!installLink) {
+        return c.json({ error: "capability_disabled", capability: "installLinks" }, 403)
+      }
+
+      return c.json(installLink)
     },
   )
 
@@ -375,10 +353,10 @@ export function registerOrgInstallLinkRoutes<T extends { Variables: OrgRouteVari
     describeRoute({
       tags: ["Organizations"],
       summary: "Download stamped installer",
-      description: "Serves the generic OpenWork installer artifact stamped at download time for this organization, or redirects to the official release asset when Den cannot prepare it.",
+      description: "Serves the generic OpenWork installer artifact stamped at download time for this organization, or redirects to a verified normal desktop download when Den cannot prepare it.",
       responses: {
         200: textResponse("Installer artifact returned successfully."),
-        302: emptyResponse("Den redirected the browser to the official release asset."),
+        302: emptyResponse("Den redirected the browser to a verified normal desktop download."),
         400: jsonResponse("The install-link token or platform was invalid.", invalidRequestSchema),
         404: jsonResponse("The install link was missing, expired, or revoked.", installLinkNotFoundSchema),
         429: jsonResponse("Too many installer download attempts.", rateLimitedSchema),
@@ -422,7 +400,7 @@ export function registerOrgInstallLinkRoutes<T extends { Variables: OrgRouteVari
 
       const artifact = await installer.resolveArtifact(fileName)
       if (!artifact) {
-        return c.redirect(installer.releaseAssetUrl(fileName), 302)
+        return c.redirect(await installer.resolveFallbackUrl(platform), 302)
       }
 
       if (platform.startsWith("mac-")) {
