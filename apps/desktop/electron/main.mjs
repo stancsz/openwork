@@ -17,7 +17,7 @@ import os from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 
-import { app, BrowserWindow, dialog, ipcMain, nativeImage, nativeTheme, net as electronNet, session, shell, systemPreferences } from "electron";
+import { app, BrowserWindow, dialog, ipcMain, nativeImage, nativeTheme, net as electronNet, Notification as ElectronNotification, session, shell, systemPreferences } from "electron";
 import { configureFakeMediaForTests, installMediaPermissionHandlers } from "./media-permissions.mjs";
 import { registerMigrationIpc } from "./migration.mjs";
 import { createRuntimeManager } from "./runtime.mjs";
@@ -439,6 +439,51 @@ async function applyDefaultAppIconImage(expectedSequence = null) {
     taskbarIconPath,
     taskbarAppId: APP_IDENTIFIER,
   });
+}
+
+async function focusMainWindowFromNotification() {
+  const win = await createMainWindow();
+  if (win.isDestroyed()) return;
+  if (win.isMinimized()) win.restore();
+  win.show();
+  win.focus();
+}
+
+/**
+ * @param {unknown} input
+ * @returns {import("@openwork/types/desktop-ipc").DesktopNotificationResult}
+ */
+function showDesktopNotification(input) {
+  if (!ElectronNotification.isSupported()) {
+    return { ok: false, reason: "notifications unsupported" };
+  }
+
+  const record = input && typeof input === "object" ? input : {};
+  const title = String(Reflect.get(record, "title") ?? "").trim();
+  if (!title) {
+    return { ok: false, reason: "missing title" };
+  }
+
+  const body = String(Reflect.get(record, "body") ?? "").trim();
+  const icon = resolveBrandIconImage() ?? APP_ICON_IMAGE;
+  const options = {
+    title,
+    ...(body ? { body } : {}),
+    ...(Reflect.get(record, "silent") === true ? { silent: true } : {}),
+    ...(icon && !icon.isEmpty() ? { icon } : {}),
+  };
+
+  try {
+    const notification = new ElectronNotification(options);
+    notification.on("click", () => {
+      void focusMainWindowFromNotification();
+    });
+    notification.show();
+    return { ok: true };
+  } catch (error) {
+    const reason = error instanceof Error ? error.message : "failed to show notification";
+    return { ok: false, reason };
+  }
 }
 
 async function readBrandIconSidecar() {
@@ -1411,6 +1456,9 @@ const desktopCommandHandlers = {
         buildEpoch: process.env.OPENWORK_BUILD_EPOCH ?? null,
         openworkDevMode: process.env.OPENWORK_DEV_MODE === "1",
       };
+  },
+  "desktopNotificationShow": async (event, ...args) => {
+      return showDesktopNotification(args[0] ?? {});
   },
   "getUiControlBridgeInfo": async (event, ...args) => {
       try {
