@@ -38,7 +38,7 @@ import { getConnectedAccount, upsertOrgOAuthClient } from "../../capability-sour
 import { assertPublicUrl } from "../../capability-sources/url-guard.js"
 import type { MemberTeamSummary } from "../../orgs.js"
 import { EXTERNAL_MCP_PRESETS } from "../../capability-sources/external-mcp-presets.js"
-import { ensureOrganizationAdmin, idParamSchema, orgAccessFailureStatus } from "./shared.js"
+import { ensureOrganizationAdmin, ensureOrganizationAdminRole, idParamSchema, orgAccessFailureStatus } from "./shared.js"
 import type { OrgRouteVariables } from "./shared.js"
 
 const connectionParamsSchema = idParamSchema("connectionId", "externalMcpConnection")
@@ -92,6 +92,12 @@ const connectionResponseSchema = z.object({
   needsReconnect: z.boolean().optional(),
   /** Native provider feature ids whose scopes are missing from the member's saved grant. */
   missingFeatures: z.array(z.string()).optional(),
+  /** Native provider account label when the provider supplied one. Never a token. */
+  externalAccountId: z.string().nullable().optional(),
+  /** Delegated scopes the calling member granted to a native provider. */
+  grantedScopes: z.array(z.string()).optional(),
+  /** Tenant selected by the admin for tenant-scoped native providers. */
+  tenantId: z.string().nullable().optional(),
   /** Present only for scope=manageable (admin) listings. */
   access: accessSummarySchema.nullable(),
 }).meta({ ref: "ExternalMcpConnectionResponse" })
@@ -337,7 +343,7 @@ export function registerMcpConnectionRoutes<T extends { Variables: OrgRouteVaria
     jsonValidator(createConnectionBodySchema),
     async (c) => {
       const payload = c.get("organizationContext")
-      const admin = ensureOrganizationAdmin(c, "Only workspace owners and admins can add MCP connections.")
+      const admin = ensureOrganizationAdminRole(c, "Only workspace owners and admins can add MCP connections.")
       if (!admin.ok) return c.json(admin.response, orgAccessFailureStatus(admin.response))
 
       const body = c.req.valid("json")
@@ -438,7 +444,7 @@ export function registerMcpConnectionRoutes<T extends { Variables: OrgRouteVaria
     jsonValidator(replaceAccessBodySchema),
     async (c) => {
       const payload = c.get("organizationContext")
-      const admin = ensureOrganizationAdmin(c, "Only workspace owners and admins can change connection access.")
+      const admin = ensureOrganizationAdminRole(c, "Only workspace owners and admins can change connection access.")
       if (!admin.ok) return c.json(admin.response, orgAccessFailureStatus(admin.response))
 
       const { connectionId } = c.req.valid("param")
@@ -549,7 +555,7 @@ export function registerMcpConnectionRoutes<T extends { Variables: OrgRouteVaria
       if (connection.credentialMode === "shared") {
         // Connecting a shared credential IS the org-level integration setup —
         // admin-only, like creating the connection itself.
-        const admin = ensureOrganizationAdmin(c, "Only workspace owners and admins can connect an org-account connection.")
+        const admin = ensureOrganizationAdminRole(c, "Only workspace owners and admins can connect an org-account connection.")
         if (!admin.ok) return c.json(admin.response, orgAccessFailureStatus(admin.response))
       } else {
         // Per-member: any member GRANTED the connection may connect their own

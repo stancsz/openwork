@@ -49,6 +49,17 @@ export type EngineInfo = {
   execution: OpencodeExecutionSnapshot | null;
 };
 
+export type DesktopNotificationInput = {
+  title: string;
+  body?: string;
+  href?: string;
+  silent?: boolean;
+};
+
+export type DesktopNotificationResult =
+  | { ok: true }
+  | { ok: false; reason: string };
+
 export type OpenworkServerInfo = {
   running: boolean;
   remoteAccessEnabled: boolean;
@@ -96,7 +107,7 @@ export type WorkspaceExportSummary = {
 };
 
 export type BrandIconApplyResult = { ok: boolean; reason?: string };
-export type BrandIconState = { applied: boolean; sourceUrl: string | null };
+export type BrandIconState = { applied: boolean; sourceUrl: string | null; reason: string | null };
 export type EvalRelaunchResult = { ok: true };
 
 export type OpencodeCommandDraft = {
@@ -144,6 +155,9 @@ export type DesktopBootstrapConfig = {
   baseUrl: string;
   apiBaseUrl?: string | null;
   requireSignin: boolean;
+  brandAppName?: string | null;
+  brandLogoUrl?: string | null;
+  brandIconUrl?: string | null;
   writtenAt?: string | null;
   claimLinks?: Array<{
     id: string;
@@ -405,6 +419,10 @@ export type DesktopCommandMap = {
 
   // App / bridge info
   appBuildInfo: { args: []; result: AppBuildInfo };
+  desktopNotificationShow: {
+    args: [input: DesktopNotificationInput];
+    result: DesktopNotificationResult;
+  };
   getUiControlBridgeInfo: { args: []; result: UiControlBridgeInfo | null };
   getOpenworkUiMcpCommand: { args: []; result: string[] };
   getComputerUseMcpCommand: { args: []; result: string[] };
@@ -499,6 +517,7 @@ export type DesktopCommandMap = {
   __openPath: { args: [target: string]; result: unknown };
   __revealItemInDir: { args: [target: string]; result: unknown };
   __getFileIcon: { args: [target: string, size?: "small" | "normal" | "large"]; result: string | null };
+  __applyBrandAppName: { args: [appName: string | null]; result: { ok: true; appName: string } };
   __applyBrandIcon: { args: [url: string | null]; result: BrandIconApplyResult };
   __getBrandIconState: { args: []; result: BrandIconState };
   __evalRelaunch: { args: []; result: EvalRelaunchResult };

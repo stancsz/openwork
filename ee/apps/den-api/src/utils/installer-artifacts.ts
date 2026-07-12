@@ -5,22 +5,23 @@ import path from "node:path"
 import { env } from "../env.js"
 
 /**
- * Resolves a generic installer artifact (openwork-installer-mac-arm64.zip,
- * openwork-installer-mac-x64.zip, openwork-installer-win-x64.exe) so
- * install-link downloads work without any local artifact directory:
+ * Resolves the standard signed desktop artifact so organization install-link
+ * downloads work without building a second installer application:
  *
  *   1. OPENWORK_INSTALLER_ARTIFACTS_DIR file, when set and present
  *      (self-hosted/dev override — the pre-#2480 behavior, moved here).
  *   2. Disk cache under OPENWORK_INSTALLER_CACHE_DIR/<releaseTag>/<fileName>.
- *   3. The public release asset published by release-generic-installer.yml:
+ *   3. The normal public desktop release asset:
  *      https://github.com/<repo>/releases/download/<releaseTag>/<fileName>,
  *      streamed to a temp file then atomically renamed into the cache.
  *
- * A missing asset (404) resolves to null so the route can 503. Concurrent
- * requests for the same artifact share one in-flight download.
+ * A missing asset (404) resolves to null so the route can fall back to the
+ * normal desktop release. Concurrent requests for the same artifact share one
+ * in-flight download.
  */
 
 export type InstallerArtifactFetcher = (url: string, init: { redirect: "follow"; signal: AbortSignal }) => Promise<Response>
+export type InstallerFallbackFetcher = (url: string, init: { method: "HEAD"; redirect: "follow"; signal: AbortSignal }) => Promise<Response>
 
 type InstallerArtifactOptions = {
   artifactsDir?: string
@@ -31,8 +32,86 @@ type InstallerArtifactOptions = {
 }
 
 const DOWNLOAD_TIMEOUT_MS = 60_000
+const FALLBACK_TIMEOUT_MS = 10_000
+const FALLBACK_CACHE_TTL_MS = 5 * 60_000
 
 const inFlightDownloads = new Map<string, Promise<Buffer | null>>()
+const fallbackDownloadUrls = new Map<string, { expiresAt: number; value: Promise<string> }>()
+
+export function installerReleaseAssetUrl(
+  fileName: string,
+  options: Pick<InstallerArtifactOptions, "releaseRepo" | "releaseTag"> = {},
+) {
+  const releaseRepo = options.releaseRepo ?? env.installerReleaseRepo
+  const releaseTag = options.releaseTag ?? env.installerReleaseTag
+  return `https://github.com/${releaseRepo}/releases/download/${encodeURIComponent(releaseTag)}/${encodeURIComponent(fileName)}`
+}
+
+export function desktopReleaseAssetName(platform: string, releaseTag: string) {
+  const version = releaseTag.startsWith("v") ? releaseTag.slice(1) : releaseTag
+  if (platform === "mac-arm64" || platform === "mac-x64") {
+    return `openwork-${platform}-${version}.dmg`
+  }
+  if (platform === "win-x64") {
+    return `openwork-${platform}-${version}.exe`
+  }
+  return null
+}
+
+export function genericInstallerAssetName(platform: string) {
+  if (platform === "mac-arm64" || platform === "mac-x64") {
+    return `openwork-installer-${platform}.zip`
+  }
+  if (platform === "win-x64") {
+    return "openwork-installer-win-x64.exe"
+  }
+  return null
+}
+
+async function verifyDesktopFallbackUrl(input: {
+  candidateUrl: string
+  fallbackUrl: string
+  fetcher: InstallerFallbackFetcher
+}) {
+  try {
+    const response = await input.fetcher(input.candidateUrl, {
+      method: "HEAD",
+      redirect: "follow",
+      signal: AbortSignal.timeout(FALLBACK_TIMEOUT_MS),
+    })
+    return response.ok ? input.candidateUrl : input.fallbackUrl
+  } catch {
+    return input.fallbackUrl
+  }
+}
+
+export function resolveInstallerFallbackUrl(
+  platform: string,
+  fallbackUrl: string,
+  options: Pick<InstallerArtifactOptions, "releaseRepo" | "releaseTag"> & { fetcher?: InstallerFallbackFetcher } = {},
+) {
+  const releaseTag = options.releaseTag ?? env.installerReleaseTag
+  const fileName = desktopReleaseAssetName(platform, releaseTag)
+  if (!fileName) {
+    return Promise.resolve(fallbackUrl)
+  }
+
+  const candidateUrl = installerReleaseAssetUrl(fileName, options)
+  const fetcher = options.fetcher
+  if (fetcher) {
+    return verifyDesktopFallbackUrl({ candidateUrl, fallbackUrl, fetcher })
+  }
+
+  const now = Date.now()
+  const cached = fallbackDownloadUrls.get(candidateUrl)
+  if (cached && cached.expiresAt > now) {
+    return cached.value
+  }
+
+  const value = verifyDesktopFallbackUrl({ candidateUrl, fallbackUrl, fetcher: fetch })
+  fallbackDownloadUrls.set(candidateUrl, { expiresAt: now + FALLBACK_CACHE_TTL_MS, value })
+  return value
+}
 
 async function readFileOrNull(filePath: string) {
   try {
@@ -70,7 +149,10 @@ async function downloadReleaseAsset(input: {
   releaseRepo: string
   fetcher: InstallerArtifactFetcher
 }): Promise<Buffer | null> {
-  const url = `https://github.com/${input.releaseRepo}/releases/download/${encodeURIComponent(input.releaseTag)}/${encodeURIComponent(input.fileName)}`
+  const url = installerReleaseAssetUrl(input.fileName, {
+    releaseRepo: input.releaseRepo,
+    releaseTag: input.releaseTag,
+  })
   console.info(`[installer-artifacts] downloading ${input.fileName} from ${input.releaseTag}`)
 
   const tempPath = `${input.cachePath}.download-${process.pid}-${randomUUID()}`

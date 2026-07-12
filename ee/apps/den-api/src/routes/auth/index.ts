@@ -1,8 +1,11 @@
 import { oauthProviderAuthServerMetadata, oauthProviderOpenIdConfigMetadata } from "@better-auth/oauth-provider"
+import { eq, sql } from "@openwork-ee/den-db/drizzle"
+import { AuthAccountTable, AuthUserTable } from "@openwork-ee/den-db/schema"
 import type { Hono } from "hono"
 import { describeRoute } from "hono-openapi"
 import { z } from "zod"
 import { auth } from "../../auth.js"
+import { normalizeLoginEmail, resolveLoginOptionKind } from "../../auth-login-options.js"
 import {
   getBreachedPasswordResponse,
   getEmailPasswordLockoutResponse,
@@ -10,16 +13,18 @@ import {
   readEmailPasswordSignInAttempt,
   recordEmailPasswordSignInResult,
 } from "../../auth-protection.js"
+import { db } from "../../db.js"
 import { env } from "../../env.js"
+import { findEnterpriseAuthRequirementForEmail } from "../../enterprise-auth-requirement.js"
 import { getInvalidMcpOAuthRedirectUris } from "../../mcp/oauth-client-policy.js"
 import { normalizeMcpOAuthClientScope } from "../../mcp/scopes.js"
-import { publicRoute, tokenRoute } from "../../middleware/index.js"
+import { publicRoute, queryValidator, tokenRoute } from "../../middleware/index.js"
 import { emptyResponse, jsonResponse } from "../../openapi.js"
 import { getSingletonSsoStatus } from "../../orgs.js"
-import { publicRequestUrl } from "../../request-url.js"
 import { samlResponsePolicyMiddleware } from "../../sso-saml-response-middleware.js"
-import type { AuthContextVariables } from "../../session.js"
+import { revokeBearerSession, type AuthContextVariables } from "../../session.js"
 import { registerDesktopAuthRoutes } from "./desktop-handoff.js"
+import { normalizeOAuthAuthorizeRedirect } from "./oauth-redirect.js"
 import { registerScimAuthRoutes } from "./scim.js"
 
 function rewriteAuthRequest(request: Request, path: string) {
@@ -70,6 +75,11 @@ export function isBetterAuthEmailPasswordRequest(request: Request) {
   const url = new URL(request.url)
   const path = getBetterAuthProxyPath(url.pathname)
   return request.method.toUpperCase() === "POST" && (path === "/sign-in/email" || path === "/sign-up/email")
+}
+
+export function isBetterAuthSignOutRequest(request: Request) {
+  const url = new URL(request.url)
+  return request.method.toUpperCase() === "POST" && getBetterAuthProxyPath(url.pathname) === "/sign-out"
 }
 
 export function canSetActiveOrganizationInSingleOrgMode(input: {
@@ -209,26 +219,30 @@ async function handleMcpClientRegistrationRequest(request: Request, path: string
   return rewritten instanceof Response ? rewritten : auth.handler(rewritten)
 }
 
-async function rewriteMetadataOrigin(response: Response, origin: string) {
-  const metadata = await response.json() as Record<string, unknown>
-  const headers = new Headers(response.headers)
-  headers.delete("content-length")
-  headers.set("content-type", "application/json")
-
-  for (const [key, value] of Object.entries(metadata)) {
-    if (typeof value === "string") {
-      metadata[key] = value.replace(env.betterAuthUrl, origin)
-    }
+// Better Auth includes RFC 9207 `iss` on successful code responses but not on
+// every compatibility path. Keep clients tolerant of an absent value; clients
+// still validate it against `issuer` whenever the callback does include it.
+async function makeAuthorizationResponseIssuerOptional(response: Response) {
+  const metadata: unknown = await response.clone().json()
+  if (!isRecord(metadata)) {
+    return response
   }
 
+  const headers = new Headers(response.headers)
+  headers.delete("content-length")
+  metadata.authorization_response_iss_parameter_supported = false
   return new Response(JSON.stringify(metadata), {
     status: response.status,
     headers,
   })
 }
 
-function requestOrigin(request: Request) {
-  return publicRequestUrl(request).origin
+async function getOAuthAuthorizationServerMetadata(request: Request) {
+  return makeAuthorizationResponseIssuerOptional(await oauthProviderAuthServerMetadata(auth)(request))
+}
+
+async function getOAuthOpenIdConfiguration(request: Request) {
+  return makeAuthorizationResponseIssuerOptional(await oauthProviderOpenIdConfigMetadata(auth)(request))
 }
 
 const authLoginLockedSchema = z.object({
@@ -240,6 +254,42 @@ const authPasswordScreeningUnavailableSchema = z.object({
   error: z.literal("password_screening_unavailable"),
   message: z.string(),
 }).meta({ ref: "AuthPasswordScreeningUnavailableError" })
+
+const loginOptionsQuerySchema = z.object({
+  email: z.string().trim().email().transform(normalizeLoginEmail),
+})
+
+const loginOptionKindSchema = z.union([
+  z.literal("sso"),
+  z.literal("google"),
+  z.literal("github"),
+  z.literal("password"),
+  z.literal("new_account"),
+])
+
+const loginOptionsResponseSchema = z.object({
+  email: z.string().email(),
+  nextStep: loginOptionKindSchema,
+  organizationSlug: z.string().optional(),
+  signInPath: z.string().optional(),
+  signInUrl: z.string().url().optional(),
+}).meta({ ref: "AuthLoginOptionsResponse" })
+
+async function getLoginOptionAccounts(email: string) {
+  const rows = await db
+    .select({
+      providerId: AuthAccountTable.providerId,
+      password: AuthAccountTable.password,
+    })
+    .from(AuthUserTable)
+    .innerJoin(AuthAccountTable, eq(AuthUserTable.id, AuthAccountTable.userId))
+    .where(sql`lower(${AuthUserTable.email}) = ${email}`)
+
+  return rows.map((row) => ({
+    providerId: row.providerId,
+    hasPassword: Boolean(row.password),
+  }))
+}
 
 async function handleAuthRequest(request: Request) {
   const singleOrgAuthGuardResponse = await getSingleOrgAuthGuardResponse(request)
@@ -265,6 +315,15 @@ async function handleAuthRequest(request: Request) {
     return breachedPasswordResponse
   }
 
+  // Desktop sessions use an Authorization bearer and intentionally send no
+  // cookies. Better Auth's sign-out endpoint only deletes the cookie-backed
+  // session, so explicitly revoke the bearer row first; auth.handler still
+  // runs to preserve its normal idempotent response and cookie cleanup for
+  // browser callers.
+  if (isBetterAuthSignOutRequest(request)) {
+    await revokeBearerSession(request.headers)
+  }
+
   const response = await auth.handler(request)
   if (emailPasswordAttempt) {
     await recordEmailPasswordSignInResult(emailPasswordAttempt, response)
@@ -276,15 +335,61 @@ export function registerAuthRoutes<T extends { Variables: AuthContextVariables }
   registerScimAuthRoutes(app)
   app.use("/api/auth/sso/saml2/callback/*", samlResponsePolicyMiddleware)
   app.use("/api/auth/sso/saml2/sp/acs/*", samlResponsePolicyMiddleware)
-  app.get("/api/auth/.well-known/oauth-authorization-server", publicRoute, async (c) => rewriteMetadataOrigin(await oauthProviderAuthServerMetadata(auth)(c.req.raw), requestOrigin(c.req.raw)))
-  app.get("/api/auth/.well-known/openid-configuration", publicRoute, async (c) => rewriteMetadataOrigin(await oauthProviderOpenIdConfigMetadata(auth)(c.req.raw), requestOrigin(c.req.raw)))
-  app.get("/.well-known/oauth-authorization-server/api/auth", publicRoute, async (c) => rewriteMetadataOrigin(await oauthProviderAuthServerMetadata(auth)(c.req.raw), requestOrigin(c.req.raw)))
-  app.get("/.well-known/openid-configuration/api/auth", publicRoute, async (c) => rewriteMetadataOrigin(await oauthProviderOpenIdConfigMetadata(auth)(c.req.raw), requestOrigin(c.req.raw)))
-  app.get("/.well-known/oauth-authorization-server", publicRoute, async (c) => rewriteMetadataOrigin(await oauthProviderAuthServerMetadata(auth)(rewriteAuthRequest(c.req.raw, "/api/auth/.well-known/oauth-authorization-server")), requestOrigin(c.req.raw)))
-  app.get("/.well-known/openid-configuration", publicRoute, async (c) => rewriteMetadataOrigin(await oauthProviderOpenIdConfigMetadata(auth)(rewriteAuthRequest(c.req.raw, "/api/auth/.well-known/openid-configuration")), requestOrigin(c.req.raw)))
+  // Better Auth uses this configured base URL for the callback `iss` value.
+  // Keep discovery on that same canonical issuer even when these routes are
+  // reached through a separate API or reverse-proxy origin.
+  app.get("/api/auth/.well-known/oauth-authorization-server", publicRoute, (c) => getOAuthAuthorizationServerMetadata(c.req.raw))
+  app.get("/api/auth/.well-known/openid-configuration", publicRoute, (c) => getOAuthOpenIdConfiguration(c.req.raw))
+  app.get("/.well-known/oauth-authorization-server/api/auth", publicRoute, (c) => getOAuthAuthorizationServerMetadata(c.req.raw))
+  app.get("/.well-known/openid-configuration/api/auth", publicRoute, (c) => getOAuthOpenIdConfiguration(c.req.raw))
+  app.get("/.well-known/oauth-authorization-server", publicRoute, (c) => getOAuthAuthorizationServerMetadata(rewriteAuthRequest(c.req.raw, "/api/auth/.well-known/oauth-authorization-server")))
+  app.get("/.well-known/openid-configuration", publicRoute, (c) => getOAuthOpenIdConfiguration(rewriteAuthRequest(c.req.raw, "/api/auth/.well-known/openid-configuration")))
   app.post("/register", publicRoute, async (c) => handleMcpClientRegistrationRequest(c.req.raw, "/api/auth/oauth2/register"))
   app.post("/api/auth/oauth2/register", publicRoute, async (c) => handleMcpClientRegistrationRequest(c.req.raw, "/api/auth/oauth2/register"))
-  app.get("/api/auth/oauth2/authorize", tokenRoute, (c) => auth.handler(c.req.raw))
+  app.get("/api/auth/oauth2/authorize", tokenRoute, async (c) => {
+    const response = await auth.handler(c.req.raw)
+    return normalizeOAuthAuthorizeRedirect(response)
+  })
+
+  app.get(
+    "/v1/auth/login-options",
+    describeRoute({
+      tags: ["Authentication"],
+      summary: "Resolve deterministic login option",
+      description: "Returns the deterministic next authentication step for an email address. SSO is preferred before Google, password, GitHub compatibility, and new account creation.",
+      responses: {
+        200: jsonResponse("Login option resolved successfully.", loginOptionsResponseSchema),
+        400: jsonResponse("The login option query parameters were invalid.", z.object({ error: z.literal("invalid_request") })),
+      },
+    }),
+    publicRoute,
+    queryValidator(loginOptionsQuerySchema),
+    async (c) => {
+      const { email } = c.req.valid("query")
+      const singletonSsoStatus = env.orgMode === "single_org" ? await getSingletonSsoStatus() : null
+      const singletonSsoRequirement = singletonSsoStatus?.configured
+        ? {
+            organizationSlug: singletonSsoStatus.organizationSlug,
+            signInPath: singletonSsoStatus.signInPath,
+          }
+        : null
+      const requirement = singletonSsoRequirement ?? await findEnterpriseAuthRequirementForEmail(email)
+      const accounts = requirement ? [] : await getLoginOptionAccounts(email)
+      const nextStep = resolveLoginOptionKind({ requireSso: Boolean(requirement), accounts })
+
+      if (nextStep === "sso" && requirement) {
+        return c.json({
+          email,
+          nextStep,
+          organizationSlug: requirement.organizationSlug,
+          signInPath: requirement.signInPath,
+          signInUrl: new URL(requirement.signInPath, env.betterAuthTrustedOrigins[0] ?? env.betterAuthUrl).toString(),
+        })
+      }
+
+      return c.json({ email, nextStep })
+    },
+  )
 
   app.on(
     ["GET", "POST", "PUT", "PATCH", "DELETE"],

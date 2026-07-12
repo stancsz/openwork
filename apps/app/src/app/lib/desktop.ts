@@ -380,11 +380,15 @@ export async function getDesktopFileIcon(target: string, size?: "small" | "norma
   return invokeElectronHelper("__getFileIcon", target, size);
 }
 
-export async function applyBrandIcon(url: string | null): Promise<boolean> {
+export async function applyBrandAppName(appName: string | null): Promise<string> {
+  const result = await invokeElectronHelper("__applyBrandAppName", appName);
+  return result.appName;
+}
+
+export async function applyBrandIcon(url: string | null): Promise<BrandIconApplyResult> {
   const apply = typeof window !== "undefined" ? window.__OPENWORK_ELECTRON__?.brandIcon?.apply : undefined;
-  if (!apply) return false;
-  const result = await apply(url);
-  return result.ok;
+  if (!apply) return { ok: false, reason: "bridge-unavailable" };
+  return apply(url);
 }
 
 export async function getBrandIconState(): Promise<BrandIconState | null> {
@@ -496,6 +500,7 @@ const {
   pickFile,
   saveFile,
   engineInstall,
+  desktopNotificationShow,
   importSkill,
   installSkillTemplate,
   listLocalSkills,
@@ -551,6 +556,7 @@ export {
   pickFile,
   saveFile,
   engineInstall,
+  desktopNotificationShow,
   importSkill,
   installSkillTemplate,
   listLocalSkills,

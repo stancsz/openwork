@@ -120,6 +120,22 @@ const DEFAULT_DESKTOP_BOOTSTRAP_PATH = (() => {
 // LOCALAPPDATA and XDG_CONFIG_HOME. Keep reading that file when the canonical one
 // is missing so existing installs keep their deployment config.
 const LEGACY_DESKTOP_BOOTSTRAP_PATH = path.join(os.homedir(), ".config", "openwork", "desktop-bootstrap.json");
+const HOSTED_DESKTOP_WEB_URL = "https://app.openworklabs.com";
+const HOSTED_DESKTOP_API_URL = "https://api.openworklabs.com";
+
+function bootstrapUrlOrigin(value) {
+  if (typeof value !== "string" || !value.trim()) return "";
+  try {
+    return new URL(value.trim()).origin;
+  } catch {
+    return value.trim().replace(/\/+$/, "");
+  }
+}
+
+function isHostedDesktopBootstrapConfig(config) {
+  const baseUrlOrigin = bootstrapUrlOrigin(config?.baseUrl);
+  return baseUrlOrigin === HOSTED_DESKTOP_WEB_URL || baseUrlOrigin === HOSTED_DESKTOP_API_URL;
+}
 
 export function createWorkspaceStore({ app, defaultDenBaseUrl, defaultRequireSignin, forceRequireSignin }) {
   function desktopBootstrapPath() {
@@ -245,10 +261,18 @@ export function createWorkspaceStore({ app, defaultDenBaseUrl, defaultRequireSig
       return id && role && url && expiresAt ? [{ id, role, ...(token ? { token } : {}), url, expiresAt }] : [];
     });
     const writtenAt = typeof input?.writtenAt === "string" ? input.writtenAt.trim() : "";
+    const apiBaseUrl = typeof input?.apiBaseUrl === "string" ? input.apiBaseUrl.trim() : "";
+    const brandAppName = typeof input?.brandAppName === "string" ? input.brandAppName.trim().slice(0, 64) : "";
+    const brandLogoUrl = typeof input?.brandLogoUrl === "string" ? input.brandLogoUrl.trim() : "";
+    const brandIconUrl = typeof input?.brandIconUrl === "string" ? input.brandIconUrl.trim() : "";
 
     return {
       baseUrl,
+      ...(apiBaseUrl ? { apiBaseUrl } : {}),
       requireSignin: forceRequireSignin || input?.requireSignin === true,
+      ...(brandAppName ? { brandAppName } : {}),
+      ...(brandLogoUrl ? { brandLogoUrl } : {}),
+      ...(brandIconUrl ? { brandIconUrl } : {}),
       ...(writtenAt ? { writtenAt } : {}),
       ...(claimLinks.length > 0 ? { claimLinks } : {}),
       ...(normalizedHandoff ? { handoff: normalizedHandoff } : {}),
@@ -260,6 +284,11 @@ export function createWorkspaceStore({ app, defaultDenBaseUrl, defaultRequireSig
     const writtenAt = typeof candidate.parsed?.writtenAt === "string" ? candidate.parsed.writtenAt.trim() : "";
     const writtenAtMs = writtenAt ? Date.parse(writtenAt) : Number.NaN;
     return Number.isFinite(writtenAtMs) ? writtenAtMs : candidate.mtimeMs;
+  }
+
+  function compareDesktopBootstrapCandidates(left, right) {
+    const classDifference = Number(!isHostedDesktopBootstrapConfig(left.normalized)) - Number(!isHostedDesktopBootstrapConfig(right.normalized));
+    return classDifference || desktopBootstrapCandidateTimeMs(left) - desktopBootstrapCandidateTimeMs(right);
   }
 
   async function readDesktopBootstrapCandidate(candidatePath) {
@@ -320,7 +349,7 @@ export function createWorkspaceStore({ app, defaultDenBaseUrl, defaultRequireSig
     const legacy = legacyPath ? await readDesktopBootstrapCandidate(legacyPath) : null;
 
     if (primary.ok && legacy?.ok) {
-      if (desktopBootstrapCandidateTimeMs(legacy) > desktopBootstrapCandidateTimeMs(primary)) {
+      if (compareDesktopBootstrapCandidates(legacy, primary) > 0) {
         await migrateLegacyDesktopBootstrapConfig(configPath, legacy);
         return legacy.normalized;
       }
@@ -330,10 +359,8 @@ export function createWorkspaceStore({ app, defaultDenBaseUrl, defaultRequireSig
     if (primary.ok) return primary.normalized;
 
     if (legacy?.ok) {
-      if (!primary.exists || desktopBootstrapCandidateTimeMs(legacy) >= desktopBootstrapCandidateTimeMs(primary)) {
-        await migrateLegacyDesktopBootstrapConfig(configPath, legacy);
-        return legacy.normalized;
-      }
+      await migrateLegacyDesktopBootstrapConfig(configPath, legacy);
+      return legacy.normalized;
     }
 
     console.warn("[desktop-bootstrap] falling back to defaults", {

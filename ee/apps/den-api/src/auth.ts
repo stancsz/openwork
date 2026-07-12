@@ -4,6 +4,7 @@ import { env } from "./env.js";
 import { deriveDenMcpResource } from "./mcp/resource.js";
 import { getDenAuthIssuer, getDenJwtOptions } from "./mcp/jwt-policy.js";
 import {
+  addRequestedMcpClientScopes,
   DEN_MCP_DEFAULT_CLIENT_SCOPES,
   DEN_MCP_SCOPES,
 } from "./mcp/scopes.js";
@@ -19,6 +20,7 @@ import { DEN_ACCOUNT_CONFIG } from "./account-linking-policy.js";
 import { SCIM_TOKEN_STORAGE_STRATEGY } from "./scim-token-storage.js";
 import { syncDenSignupContact } from "./loops.js";
 import { sendEmail } from "./utils/email/send-email.js";
+import { resolveInvitationDownloadUrl } from "./install-links.js";
 import {
   DEN_API_KEY_DEFAULT_PREFIX,
   DEN_API_KEY_EXPIRES_IN_DAYS,
@@ -63,7 +65,7 @@ import { betterAuth } from "better-auth";
 import { APIError, createAuthMiddleware } from "better-auth/api";
 import { drizzleAdapter } from "better-auth/adapters/drizzle";
 import { deleteSessionCookie } from "better-auth/cookies";
-import { sql } from "@openwork-ee/den-db/drizzle";
+import { and, eq, sql } from "@openwork-ee/den-db/drizzle";
 import { emailOTP, jwt, organization } from "better-auth/plugins";
 
 function localMcpResourceAliases(resource: string) {
@@ -90,15 +92,22 @@ function apiPublicMcpResource(apiPublicUrl: string | undefined) {
   if (!apiPublicUrl) return [];
 
   try {
-    return [`${new URL(apiPublicUrl).origin}/mcp`];
+    const url = new URL(apiPublicUrl);
+    const pathname = url.pathname.replace(/\/+$/, "");
+    return [`${url.origin}${pathname === "/" ? "" : pathname}/mcp`];
   } catch {
     return [];
   }
 }
 
+function mcpEndpointResourceAliases(resource: string) {
+  const base = resource.replace(/\/+$/, "");
+  return [`${base}/agent`, `${base}/admin`];
+}
+
 export const DEN_MCP_RESOURCE = env.mcpResourceUrl ?? deriveDenMcpResource(env.betterAuthUrl, env.webAppHosts);
 const DEN_API_PUBLIC_MCP_RESOURCES = apiPublicMcpResource(env.apiPublicUrl);
-export const DEN_MCP_RESOURCES = Array.from(new Set([
+const DEN_MCP_BASE_RESOURCES = [
   DEN_MCP_RESOURCE,
   // Audience compatibility: tokens issued before the proxied default carry
   // the bare-origin resource (`<betterAuthUrl>/mcp`); keep accepting them.
@@ -109,6 +118,13 @@ export const DEN_MCP_RESOURCES = Array.from(new Set([
   ...localMcpResourceAliases(DEN_MCP_RESOURCE),
   ...DEN_API_PUBLIC_MCP_RESOURCES.flatMap((resource) => localMcpResourceAliases(resource)),
   ...env.mcpAdditionalResources.flatMap((resource) => localMcpResourceAliases(resource)),
+];
+export const DEN_MCP_RESOURCES = Array.from(new Set([
+  ...DEN_MCP_BASE_RESOURCES,
+  // rmcp uses the configured concrete endpoint as the OAuth resource during
+  // token exchange. Accept the two registered child endpoints as aliases of
+  // their canonical parent resource.
+  ...DEN_MCP_BASE_RESOURCES.flatMap((resource) => mcpEndpointResourceAliases(resource)),
 ]));
 export const DEN_MCP_TOKEN_USE_CLAIM = `${env.mcpClaimNamespace}/token_use`;
 export const DEN_MCP_ORG_ID_CLAIM = `${env.mcpClaimNamespace}/org_id`;
@@ -147,6 +163,12 @@ function hasRole(roleValue: string, roleName: string) {
 
 function maybeString(value: unknown) {
   return typeof value === "string" && value.trim() ? value.trim() : null;
+}
+
+function stringArray(value: unknown) {
+  return Array.isArray(value)
+    ? value.filter((entry: unknown): entry is string => typeof entry === "string")
+    : [];
 }
 
 function pickRemoteIdentity(userInfo: Record<string, unknown>) {
@@ -197,6 +219,21 @@ async function revokeOrganizationMemberCredentials(input: {
   });
 }
 
+async function deleteOrganizationMemberConnectedAccounts(input: {
+  organizationId: string;
+  orgMembershipId: string;
+}) {
+  const organizationId = normalizeDenTypeId("organization", input.organizationId);
+  const orgMembershipId = normalizeDenTypeId("member", input.orgMembershipId);
+
+  await db
+    .delete(schema.ConnectedAccountTable)
+    .where(and(
+      eq(schema.ConnectedAccountTable.organizationId, organizationId),
+      eq(schema.ConnectedAccountTable.orgMembershipId, orgMembershipId),
+    ));
+}
+
 function throwMemberLifecycleError(message: string): never {
   throw new APIError("BAD_REQUEST", { message });
 }
@@ -208,6 +245,21 @@ function getBodyEmail(body: unknown) {
 
   const value = Object.getOwnPropertyDescriptor(body, "email")?.value;
   return typeof value === "string" && value.trim() ? value.trim() : null;
+}
+
+function removedMemberIdentity(value: unknown): { id: string; organizationId: string } | null {
+  if (!value || typeof value !== "object") {
+    return null;
+  }
+
+  const nestedMember = Object.getOwnPropertyDescriptor(value, "member")?.value;
+  const candidate = nestedMember && typeof nestedMember === "object" ? nestedMember : value;
+  const id = Object.getOwnPropertyDescriptor(candidate, "id")?.value;
+  const organizationId = Object.getOwnPropertyDescriptor(candidate, "organizationId")?.value;
+  if (typeof id !== "string" || typeof organizationId !== "string") {
+    return null;
+  }
+  return { id, organizationId };
 }
 
 function getEnterpriseAuthRedirectUrl(input: {
@@ -254,6 +306,10 @@ export const auth = betterAuth({
             throwMemberLifecycleError(validation.message);
           }
 
+          await deleteOrganizationMemberConnectedAccounts({
+            organizationId: member.organizationId,
+            orgMembershipId: member.id,
+          });
           await revokeOrganizationMemberCredentials({
             organizationId: member.organizationId,
             orgMembershipId: member.id,
@@ -287,6 +343,31 @@ export const auth = betterAuth({
   },
   hooks: {
     before: createAuthMiddleware(async (ctx) => {
+      if (ctx.path === "/oauth2/authorize") {
+        const clientId = maybeString(ctx.query?.client_id);
+        const requestedScopes = maybeString(ctx.query?.scope)?.split(/\s+/).filter(Boolean) ?? [];
+
+        if (clientId) {
+          const client = await ctx.context.adapter.findOne<{ scopes?: unknown }>({
+            model: "oauthClient",
+            where: [{ field: "clientId", value: clientId }],
+          });
+          const clientScopes = stringArray(client?.scopes);
+          const nextScopes = addRequestedMcpClientScopes(clientScopes, requestedScopes);
+
+          if (nextScopes.length > clientScopes.length) {
+            await ctx.context.adapter.update({
+              model: "oauthClient",
+              where: [{ field: "clientId", value: clientId }],
+              update: {
+                scopes: nextScopes,
+                updatedAt: new Date(),
+              },
+            });
+          }
+        }
+      }
+
       if (ctx.path !== "/sign-in/email" && ctx.path !== "/sign-up/email") {
         return;
       }
@@ -306,6 +387,17 @@ export const auth = betterAuth({
       });
     }),
     after: createAuthMiddleware(async (ctx) => {
+      if (ctx.path === "/organization/leave") {
+        const member = removedMemberIdentity(ctx.context.returned);
+        if (member) {
+          await deleteOrganizationMemberConnectedAccounts({
+            organizationId: member.organizationId,
+            orgMembershipId: member.id,
+          });
+        }
+        return;
+      }
+
       if (ctx.path !== "/callback/:id") {
         return;
       }
@@ -465,6 +557,12 @@ export const auth = betterAuth({
         },
       },
       async sendInvitationEmail(data) {
+        const downloadUrl = await resolveInvitationDownloadUrl({
+          organizationId: data.organization.id,
+          createdByUserId: data.inviter.user.id,
+          metadata: data.organization.metadata,
+        });
+
         await sendEmail({
           to: data.email,
           template: "organizationInvite",
@@ -474,6 +572,7 @@ export const auth = betterAuth({
             invitedByEmail: data.inviter.user.email,
             organizationName: data.organization.name,
             role: data.role,
+            downloadUrl,
           },
         });
       },
@@ -492,6 +591,10 @@ export const auth = betterAuth({
             throwMemberLifecycleError(validation.message);
           }
 
+          await deleteOrganizationMemberConnectedAccounts({
+            organizationId: member.organizationId,
+            orgMembershipId: member.id,
+          });
           await revokeOrganizationMemberCredentials({
             organizationId: member.organizationId,
             orgMembershipId: member.id,
