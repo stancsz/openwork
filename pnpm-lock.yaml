@@ -283,7 +283,7 @@ importers:
         specifier: 0.1.77
         version: 0.1.77(solid-js@1.9.9)(stage-js@1.0.0-alpha.17)(typescript@5.9.3)(web-tree-sitter@0.25.10)
       openwork-server:
-        specifier: 0.17.20
+        specifier: 0.17.21
         version: link:../server
       solid-js:
         specifier: 1.9.9
@@ -19430,7 +19430,7 @@ snapshots:
 
   webpack@5.108.4(postcss@8.4.38):
     dependencies:
-      '@types/estree': 1.0.8
+      '@types/estree': 1.0.9
       '@types/json-schema': 7.0.15
       '@webassemblyjs/ast': 1.14.1
       '@webassemblyjs/wasm-edit': 1.14.1
@@ -19449,7 +19449,7 @@ snapshots:
       minimizer-webpack-plugin: 5.6.1(postcss@8.4.38)(webpack@5.108.4(postcss@8.4.38))
       neo-async: 2.6.2
       schema-utils: 4.3.3
-      tapable: 2.3.0
+      tapable: 2.3.3
       watchpack: 2.5.2
       webpack-sources: 3.5.1
     transitivePeerDependencies:
