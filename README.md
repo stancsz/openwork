@@ -65,10 +65,17 @@ Use this remote MCP server URL:
 https://api.openworklabs.com/mcp/agent
 ```
 
-### OpenWork Den
+## OpenWork Den
 
-<img width="1546" height="915" alt="Screenshot 2026-07-12 at 22 24 49" src="https://github.com/user-attachments/assets/033dbbfe-5661-4f7c-869c-46278406d6cc" />
+OpenWork Den is the control plane for managing OpenWork across a team or organization.
 
+- Provision inference at scale and control which members and teams can use each model provider.
+- Invite teammates, create teams, and manage access from one place.
+- Set desktop policies, restrict local model access, and control which app versions your organization can use.
+- Publish skills and plugins through marketplaces, then assign them to the organization, a team, or specific people.
+- Import Anthropic-compatible plugins and make their supported skills and remote MCPs available through the OpenWork MCP.
+
+<img width="1546" height="915" alt="OpenWork Den organization control plane" src="https://github.com/user-attachments/assets/033dbbfe-5661-4f7c-869c-46278406d6cc" />
 
 ## Documentation
 
