@@ -672,7 +672,7 @@ export function SessionSurface(props: SessionSurfaceProps) {
     }
     void verifyTargets();
     return () => { cancelled = true; };
-  }, [openTargetsFingerprint, props.client, props.sessionId, props.workspaceId]);
+  }, [chatStreaming, openTargetsFingerprint, props.client, props.sessionId, props.workspaceId]);
 
   useEffect(() => {
     usePanelTabStore.getState().syncTranscriptArtifacts(props.sessionId, verifiedOpenTargets);
@@ -919,7 +919,7 @@ export function SessionSurface(props: SessionSurfaceProps) {
         unreadable.length === 1
           ? `${unreadable[0]?.name ?? "File"} has a format the model can't read`
           : `${unreadable.length} files have formats the model can't read`,
-        { description: "Convert to PDF, image, or plain text and attach again." },
+        { description: t("composer.any_file_type_supported") },
       );
     }
     if (!accepted.length) return;
