@@ -13,7 +13,7 @@ export function normalizeDesktopVersionString(value: string): string | null {
   return /^\d+\.\d+\.\d+$/.test(normalized) ? normalized : null
 }
 
-function compareDesktopVersions(left: string, right: string): number {
+export function compareDesktopVersions(left: string, right: string): number {
   const leftParts = left.split(".").map(Number)
   const rightParts = right.split(".").map(Number)
   for (let index = 0; index < 3; index += 1) {
@@ -47,7 +47,7 @@ export function getDesktopVersionMetadata(payload: unknown): DesktopVersionMetad
     latestAppVersion,
     publishedDesktopVersions: [...new Set(
       publishedDesktopVersions.length > 0 ? publishedDesktopVersions : [latestAppVersion],
-    )].sort(compareDesktopVersions),
+    )].sort((left, right) => compareDesktopVersions(right, left)),
   }
 }
 

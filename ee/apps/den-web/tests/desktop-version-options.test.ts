@@ -11,7 +11,7 @@ describe("desktop version options", () => {
       minAppVersion: "0.11.207",
       latestAppVersion: "0.17.24",
       publishedDesktopVersions: ["0.17.24", "0.17.22", "0.17.23"],
-    })?.publishedDesktopVersions).toEqual(["0.17.22", "0.17.23", "0.17.24"])
+    })?.publishedDesktopVersions).toEqual(["0.17.24", "0.17.23", "0.17.22"])
   })
 
   test("falls back to the latest version from older Den APIs", () => {

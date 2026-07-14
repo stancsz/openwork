@@ -15,6 +15,7 @@ import { EnterprisePlanNotice } from "./enterprise-plan-notice";
 import { EgressDiagnosticsCard } from "./egress-diagnostics-card";
 import {
   allPublishedDesktopVersionsAllowed,
+  compareDesktopVersions,
   getDesktopVersionMetadata,
   initialAllowedDesktopVersions,
 } from "./desktop-version-options";
@@ -102,6 +103,10 @@ export function OrgSettingsScreen() {
   const [desktopVersionOptions, setDesktopVersionOptions] = useState<string[]>(
     [],
   );
+  const [desktopVersionRange, setDesktopVersionRange] = useState<{
+    minVersion: string;
+    maxVersion: string;
+  } | null>(null);
   const [allowedDesktopVersionsDraft, setAllowedDesktopVersionsDraft] =
     useState<string[]>([]);
   const [desktopVersionOptionsBusy, setDesktopVersionOptionsBusy] =
@@ -124,13 +129,23 @@ export function OrgSettingsScreen() {
     [allowedDomainsDraft],
   );
   const hasDraftDomains = (draftAllowedDomains?.length ?? 0) > 0;
+  const supportedDesktopVersionOptions = useMemo(
+    () =>
+      desktopVersionRange
+        ? desktopVersionOptions.filter(
+            (version) =>
+              compareDesktopVersions(version, desktopVersionRange.maxVersion) <= 0,
+          )
+        : [],
+    [desktopVersionOptions, desktopVersionRange],
+  );
   const selectedDesktopVersions = useMemo(
     () => new Set(allowedDesktopVersionsDraft),
     [allowedDesktopVersionsDraft],
   );
   const allDesktopVersionsAllowed = allPublishedDesktopVersionsAllowed({
     draftVersions: allowedDesktopVersionsDraft,
-    publishedVersions: desktopVersionOptions,
+    publishedVersions: supportedDesktopVersionOptions,
   });
   const pageSuccess = orgSettingsCompletion?.message ?? null;
 
@@ -183,9 +198,14 @@ export function OrgSettingsScreen() {
         }
 
         setDesktopVersionOptions(metadata.publishedDesktopVersions);
+        setDesktopVersionRange({
+          minVersion: metadata.minAppVersion,
+          maxVersion: metadata.latestAppVersion,
+        });
       } catch (error) {
         if (!cancelled) {
           setDesktopVersionOptions([]);
+          setDesktopVersionRange(null);
           setDesktopVersionOptionsError(
             error instanceof Error
               ? error.message
@@ -207,15 +227,15 @@ export function OrgSettingsScreen() {
   }, []);
 
   useEffect(() => {
-    if (!orgContext || desktopVersionOptions.length === 0) {
+    if (!orgContext || supportedDesktopVersionOptions.length === 0) {
       return;
     }
 
     setAllowedDesktopVersionsDraft(initialAllowedDesktopVersions(
       getAllowedDesktopVersionsFromMetadata(orgContext.organization.metadata),
-      desktopVersionOptions,
-    ));
-  }, [desktopVersionOptions, orgContext]);
+      supportedDesktopVersionOptions,
+    ).filter((version) => supportedDesktopVersionOptions.includes(version)));
+  }, [orgContext, supportedDesktopVersionOptions]);
 
   useEffect(() => {
     if (!copiedOrgId) {
@@ -287,11 +307,13 @@ export function OrgSettingsScreen() {
         allowedEmailDomains: domainRestrictionsEnabled
           ? draftAllowedDomains
           : null,
-        ...(desktopVersionOptions.length > 0
+        ...(supportedDesktopVersionOptions.length > 0
           ? {
               allowedDesktopVersions: allDesktopVersionsAllowed
                 ? null
-                : allowedDesktopVersionsDraft,
+                : supportedDesktopVersionOptions.filter((version) =>
+                    selectedDesktopVersions.has(version),
+                  ),
             }
           : {}),
         requireSso: requireSsoEnabled,
@@ -501,11 +523,11 @@ export function OrgSettingsScreen() {
               Choose which supported desktop versions can sign in to this
               workspace.
             </p>
-            {desktopVersionOptions.length > 0 ? (
+            {desktopVersionRange ? (
               <p className="text-[10px] text-gray-400">
-                This server currently supports desktop
-                {` ${desktopVersionOptions[0]} `}
-                to {desktopVersionOptions[desktopVersionOptions.length - 1]}.
+                This server currently supports desktop v
+                {desktopVersionRange.minVersion} to v
+                {desktopVersionRange.maxVersion}.
               </p>
             ) : null}
           </div>
@@ -526,25 +548,53 @@ export function OrgSettingsScreen() {
           !desktopVersionOptionsError &&
           desktopVersionOptions.length > 0 ? (
             <div className="grid gap-4">
-              <div className="grid gap-3">
+              <div
+                data-testid="desktop-version-list"
+                className="grid max-h-[400px] gap-3 overflow-y-auto pr-2"
+              >
                 {desktopVersionOptions.map((version) => {
                   const checked = selectedDesktopVersions.has(version);
+                  const requiresServerUpgrade =
+                    desktopVersionRange !== null &&
+                    compareDesktopVersions(
+                      version,
+                      desktopVersionRange.maxVersion,
+                    ) > 0;
 
                   return (
                     <label
                       key={version}
-                      className="flex items-center justify-between gap-4 rounded-[24px] border border-gray-200 bg-white px-5 py-4"
+                      data-desktop-version={version}
+                      data-supported={!requiresServerUpgrade}
+                      className={[
+                        "flex items-center justify-between gap-4 rounded-[24px] border px-5 py-4",
+                        requiresServerUpgrade
+                          ? "cursor-not-allowed border-gray-200 bg-gray-100 text-gray-400"
+                          : "border-gray-200 bg-white",
+                      ].join(" ")}
                     >
                       <div className="grid gap-1">
-                        <p className="text-[15px] font-medium text-gray-900">
-                          {version}
+                        <p
+                          className={[
+                            "text-[15px] font-medium",
+                            requiresServerUpgrade
+                              ? "text-gray-400"
+                              : "text-gray-900",
+                          ].join(" ")}
+                        >
+                          v{version}
                         </p>
+                        {requiresServerUpgrade ? (
+                          <p className="text-[12px] text-gray-400">
+                            Upgrade server to allow this version
+                          </p>
+                        ) : null}
                       </div>
                       <input
                         type="checkbox"
                         checked={checked}
-                        disabled={!isOwner}
-                        aria-label={`Allow desktop version ${version}`}
+                        disabled={!isOwner || requiresServerUpgrade}
+                        aria-label={`Allow desktop version v${version}`}
                         onChange={(event) =>
                           setAllowedDesktopVersionsDraft((current) =>
                             toggleAllowedDesktopVersion(
