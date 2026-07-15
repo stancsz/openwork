@@ -143,6 +143,7 @@ async function sendMcpResponse(request: IncomingMessage, response: ServerRespons
 async function startOAuthMcpServer(options: {
   rejectAuthenticatedMcp?: boolean
   clientMetadataSupported?: boolean
+  scopeLessChallenge?: boolean
 } = {}) {
   let origin = ""
   let capturedRegistration: Record<string, unknown> | null = null
@@ -210,7 +211,9 @@ async function startOAuthMcpServer(options: {
       if (url.pathname === "/mcp") {
         if (request.headers.authorization !== "Bearer enterprise-access-token") {
           response.writeHead(401, {
-            "www-authenticate": `Bearer resource_metadata="${origin}/.well-known/oauth-protected-resource/mcp", scope="tools.read"`,
+            "www-authenticate": options.scopeLessChallenge
+              ? `Bearer resource_metadata="${origin}/.well-known/oauth-protected-resource/mcp"`
+              : `Bearer resource_metadata="${origin}/.well-known/oauth-protected-resource/mcp", scope="tools.read"`,
           })
           response.end()
           return
@@ -614,6 +617,47 @@ describe("enterprise MCP OAuth persistence contract", () => {
       && error.code === "MCP_OAUTH_ISSUER_MISMATCH")
   })
 
+  it("binds a resource-scoped discovery alias to its canonical callback issuer", async () => {
+    const alias = "https://api.salesforce.example:443/platform/mcp/v1/platform/sobject-all"
+    const canonicalIssuer = "https://login.salesforce.example"
+    const discoveryState: OAuthDiscoveryState = {
+      authorizationServerUrl: alias,
+      authorizationServerMetadata: {
+        issuer: canonicalIssuer,
+        authorization_endpoint: `${canonicalIssuer}/services/oauth2/authorize`,
+        token_endpoint: `${canonicalIssuer}/services/oauth2/token`,
+        response_types_supported: ["code"],
+      },
+      resourceMetadata: {
+        resource: alias,
+        authorization_servers: [alias],
+      },
+    }
+    const persistence = new MemoryOAuthPersistence()
+    const provider = new EnterpriseMcpOAuthProvider({
+      redirectUri: "https://den.example.test/v1/mcp-connections/oauth/callback",
+      connectionId: "connection-1",
+      persistence,
+      flow: { kind: "connect", authorizationId: "signed-state" },
+      clientName: "OpenWork",
+      clock: { now: () => Date.now() },
+      lifecycle: { expiresAt: Date.now() + 30_000, signal: new AbortController().signal },
+      authorizationTransactionTtlMs: 600_000,
+      expirationSkewMs: 0,
+      oauthConfiguration: {
+        applicationType: "web",
+        authorizationServerIssuer: canonicalIssuer,
+      },
+    })
+
+    await assert.doesNotReject(provider.saveDiscoveryState(discoveryState))
+    assert.doesNotThrow(() => validateMcpAuthorizationResponseIssuer({
+      expectedIssuer: canonicalIssuer,
+      discoveryState,
+      responseIssuer: canonicalIssuer,
+    }))
+  })
+
   it("rejects a non-HTTPS client metadata document before OAuth performs network work", async () => {
     let fetchCount = 0
     const client = createEnterpriseMcpClient({
@@ -803,6 +847,34 @@ describe("enterprise MCP OAuth persistence contract", () => {
       ]) {
         assert.ok(events.some((event) => event.requestPhase === phase), `Expected a diagnostic event for ${phase}`)
       }
+    } finally {
+      await server.close()
+    }
+  })
+
+  it("falls back to advertised scopes when the challenge and requested scopes are empty", async () => {
+    const server = await startOAuthMcpServer({ scopeLessChallenge: true })
+    try {
+      const persistence = new MemoryOAuthPersistence()
+      const client = createEnterpriseMcpClient({ fetch })
+      const connection: EnterpriseMcpConnection = {
+        id: "oauth-advertised-scope-fallback",
+        serverUrl: `${server.origin}/mcp`,
+        authorization: {
+          type: "oauth",
+          persistence,
+          configuration: { applicationType: "web", requestedScopes: [] },
+        },
+      }
+      const started = await client.connect({
+        connection,
+        redirectUri: "https://den.example.test/v1/mcp-connections/oauth/callback",
+        authorizationId: "signed-fallback-state",
+      })
+      assert.equal(started.status, "needs_auth")
+      if (started.status !== "needs_auth") throw new Error("Expected OAuth authorization to be required.")
+      assert.equal(new URL(started.authorizeUrl).searchParams.get("scope"), "tools.read")
+      assert.equal(server.registration()?.scope, "tools.read")
     } finally {
       await server.close()
     }

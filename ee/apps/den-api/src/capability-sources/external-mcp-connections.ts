@@ -21,7 +21,6 @@ import {
 import { createDenTypeId, type DenTypeId } from "@openwork-ee/utils/typeid"
 import { db } from "../db.js"
 import { normalizeConnectedAccountScopes, normalizeOAuthClientExtra } from "./oauth-credentials.js"
-import { externalMcpSharedCallbackUrl } from "./external-mcp-oauth-contract.js"
 
 /**
  * CRUD for ExternalMcpConnectionTable and its access grants — the "add any
@@ -45,6 +44,9 @@ type ExternalMcpConnectionId = DenTypeId<"externalMcpConnection">
 type PluginMcpRequirementBindingId = DenTypeId<"pluginMcpRequirementBinding">
 type PluginId = DenTypeId<"plugin">
 type ConfigObjectId = DenTypeId<"configObject">
+type ExternalMcpOAuthConfigurationInput = Omit<ExternalMcpOAuthConfiguration, "callbackMode"> & {
+  callbackMode?: ExternalMcpOAuthConfiguration["callbackMode"]
+}
 
 function unique<TValue extends string>(values: TValue[]): TValue[] {
   return [...new Set(values)]
@@ -413,11 +415,23 @@ export async function createExternalMcpConnection(input: {
   authType: "oauth" | "apikey" | "none"
   credentialMode: "shared" | "per_member"
   apiKey?: string | null
-  oauthConfiguration?: ExternalMcpOAuthConfiguration | null
+  oauthConfiguration?: ExternalMcpOAuthConfigurationInput | null
   createdByOrgMembershipId: OrgMembershipId
   access: ExternalMcpAccessInput
 }): Promise<ExternalMcpConnectionRow> {
   const id = createDenTypeId("externalMcpConnection")
+  const oauthConfiguration: ExternalMcpOAuthConfiguration | null = input.authType === "oauth"
+    ? {
+        ...(input.oauthConfiguration ?? {
+          version: 1,
+          authorizationServerIssuer: null,
+          requestedScopes: [],
+        }),
+        // Every new OAuth connection uses the deployment-wide callback. Rows
+        // created before this contract keep their stored per-connection mode.
+        callbackMode: "shared-v1",
+      }
+    : null
   await db.insert(ExternalMcpConnectionTable).values({
     id,
     organizationId: input.organizationId,
@@ -426,19 +440,7 @@ export async function createExternalMcpConnection(input: {
     authType: input.authType,
     credentialMode: input.credentialMode,
     apiKey: input.apiKey ?? null,
-    oauthConfiguration: input.authType === "oauth"
-      ? {
-          ...(input.oauthConfiguration ?? {
-            version: 1,
-            authorizationServerIssuer: null,
-            requestedScopes: [],
-          }),
-          // This helper is shared by dashboard, agent, and marketplace
-          // callers, so the invariant belongs here rather than only at the
-          // HTTP route boundary.
-          callbackMode: "shared-v1",
-        }
-      : null,
+    oauthConfiguration,
     createdByOrgMembershipId: input.createdByOrgMembershipId,
   })
   await replaceExternalMcpConnectionAccess({
@@ -692,9 +694,8 @@ export async function updateExternalMcpConnection(
     if (existing.updatedAt.getTime() !== input.expectedUpdatedAt.getTime()) {
       return { status: "conflict" }
     }
-    // Callback migration is intentionally absent from the ordinary edit
-    // contract. Once a connection has selected the shared callback, no caller
-    // (including another Den module) may write it back to legacy mode.
+    // Callback mode is an internal compatibility contract. Ordinary edits
+    // preserve it so existing registrations keep their original redirect URI.
     if (
       input.authType === "oauth"
       && input.oauthConfiguration?.callbackMode === "legacy-v1"
@@ -904,148 +905,6 @@ export async function updateExternalMcpConnection(
       connection: updated,
       identityChanged,
       reconnectionRequired: credentialsInvalidated && input.authType === "oauth",
-    }
-  })
-}
-
-export type MigrateExternalMcpOAuthCallbackResult =
-  | { status: "not_found" }
-  | { status: "not_oauth" }
-  | {
-    status: "migrated"
-    connection: ExternalMcpConnectionRow
-    changed: boolean
-    dynamicRegistrationInvalidated: boolean
-    manualClientPreserved: boolean
-  }
-
-/**
- * Permanently moves one OAuth connection to the deployment-wide callback.
- *
- * The transaction deliberately does not touch access grants or marketplace
- * bindings. A manually entered client stays in place (including its encrypted
- * secret); an SDK-created registration is removed because its redirect URI is
- * part of the registration contract and must be registered again. For a
- * per-member connection, only the initiating admin's authorization state is
- * cleared; migrating the shared client must never erase other members' tokens.
- */
-export async function migrateExternalMcpOAuthCallbackToShared(input: {
-  organizationId: OrganizationId
-  connectionId: ExternalMcpConnectionId
-  orgMembershipId: OrgMembershipId
-}): Promise<MigrateExternalMcpOAuthCallbackResult> {
-  return db.transaction(async (tx) => {
-    const rows = await tx
-      .select()
-      .from(ExternalMcpConnectionTable)
-      .where(and(
-        eq(ExternalMcpConnectionTable.organizationId, input.organizationId),
-        eq(ExternalMcpConnectionTable.id, input.connectionId),
-      ))
-      .limit(1)
-      .for("update")
-    const connection = rows[0]
-    if (!connection) return { status: "not_found" }
-    if (connection.authType !== "oauth") return { status: "not_oauth" }
-    if (connection.oauthConfiguration?.callbackMode === "shared-v1") {
-      return {
-        status: "migrated",
-        connection,
-        changed: false,
-        dynamicRegistrationInvalidated: false,
-        manualClientPreserved: false,
-      }
-    }
-
-    const clientRows = await tx
-      .select()
-      .from(OrgOAuthClientTable)
-      .where(and(
-        eq(OrgOAuthClientTable.organizationId, input.organizationId),
-        eq(OrgOAuthClientTable.providerId, input.connectionId),
-      ))
-      .limit(1)
-      .for("update")
-    const client = clientRows[0]
-    const extra = normalizeOAuthClientExtra(client?.extra)
-    const dynamicRegistrationInvalidated = Boolean(client && isSdkRegisteredOAuthClient(extra))
-    const manualClientPreserved = Boolean(client && !dynamicRegistrationInvalidated)
-
-    if (connection.credentialMode === "per_member") {
-      await tx.delete(ConnectedAccountTable).where(and(
-        eq(ConnectedAccountTable.organizationId, input.organizationId),
-        eq(ConnectedAccountTable.orgMembershipId, input.orgMembershipId),
-        eq(ConnectedAccountTable.providerId, input.connectionId),
-      ))
-    }
-
-    if (dynamicRegistrationInvalidated) {
-      await tx.delete(OrgOAuthClientTable).where(and(
-        eq(OrgOAuthClientTable.organizationId, input.organizationId),
-        eq(OrgOAuthClientTable.providerId, input.connectionId),
-      ))
-    } else if (client) {
-      await tx
-        .update(OrgOAuthClientTable)
-        .set({
-          extra: {
-            ...(extra ?? {}),
-            enterpriseMcpRegistrationSource: "pre-registered",
-            registrationContractVersion: 2,
-            registeredRedirectUri: externalMcpSharedCallbackUrl(),
-            authorizationServerIssuer: connection.oauthConfiguration?.authorizationServerIssuer ?? undefined,
-          },
-        })
-        .where(and(
-          eq(OrgOAuthClientTable.organizationId, input.organizationId),
-          eq(OrgOAuthClientTable.id, client.id),
-        ))
-    }
-
-    const oauthConfiguration: ExternalMcpOAuthConfiguration = {
-      ...(connection.oauthConfiguration ?? {
-        version: 1,
-        authorizationServerIssuer: null,
-        requestedScopes: [],
-      }),
-      callbackMode: "shared-v1",
-    }
-    const updatedAt = new Date(Math.max(Date.now(), connection.updatedAt.getTime() + 1))
-    await tx
-      .update(ExternalMcpConnectionTable)
-      .set({
-        oauthConfiguration,
-        accessToken: null,
-        refreshToken: null,
-        tokenType: null,
-        scope: null,
-        expiresAt: null,
-        pendingCodeVerifier: null,
-        connectedAt: null,
-        updatedAt,
-      })
-      .where(and(
-        eq(ExternalMcpConnectionTable.organizationId, input.organizationId),
-        eq(ExternalMcpConnectionTable.id, input.connectionId),
-      ))
-
-    return {
-      status: "migrated",
-      connection: {
-        ...connection,
-        oauthConfiguration,
-        accessToken: null,
-        refreshToken: null,
-        tokenType: null,
-        scope: null,
-        expiresAt: null,
-        pendingCodeVerifier: null,
-        connectedAt: null,
-        updatedAt,
-      },
-      changed: true,
-      dynamicRegistrationInvalidated,
-      manualClientPreserved,
     }
   })
 }
