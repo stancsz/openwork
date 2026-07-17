@@ -94,9 +94,9 @@ package:electron` picks up the reroute overrides in packaged builds.
 
 1. **Config** — no file touched (`requireSignin`, `opencode.json`).
 2. **Patch / modify** — small drift-aware working-tree edit at a verified anchor (brand name, `electron-builder.yml`).
-3. **Reroute** — swap a whole module for a brand override (the welcome page). The original source stays byte-for-byte unchanged; `apply.mjs` generates `brand/overrides/<name>.tsx` + `apps/app/vite.brandkit.config.mts`. Run dev/build with `vite --config vite.brandkit.config.mts` from `apps/app`.
+3. **Reroute** — swap a whole module for a brand override (the welcome page). The original source stays byte-for-byte unchanged; `apply.mjs` generates `apps/app/src/brandkit-generated/<name>.tsx` + `apps/app/vite.brandkit.config.mts` (inside apps/app so react/`@/` imports resolve in production builds). Run dev/build with `vite --config vite.brandkit.config.mts` from `apps/app`.
 
-**Generated files are ad-hoc, never committed.** `apply.mjs` produces `opencode.json`, `apps/app/vite.brandkit.config.mts`, and `brand/overrides/*.tsx` and registers them in `.git/info/exclude` — so they can't be committed by accident and `git pull upstream` never collides with them. Only kit *source* is committed. Always run `apply.mjs` before building.
+**Generated files are ad-hoc, never committed.** `apply.mjs` produces `opencode.json`, `apps/app/vite.brandkit.config.mts`, and `apps/app/src/brandkit-generated/*.tsx` and registers them in `.git/info/exclude` — so they can't be committed by accident and `git pull upstream` never collides with them. Only kit *source* is committed. Always run `apply.mjs` before building.
 
 The welcome page (hero copy, steps, feature cards, `showSignIn`) is customized via the `welcome` block in `brand.config.json` — no source edit.
 
