@@ -59,7 +59,11 @@ function runReplaceAll(op, { apply }) {
   const re = new RegExp(op.pattern, op.flags ?? "g");
   const matches = before.match(re);
   if (matches && matches.length > 0) {
-    if (apply) write(op.target, before.replace(re, op.replace));
+    const after = before.replace(re, op.replace);
+    // A pattern that also matches its own replacement (used for ops whose
+    // value varies between runs, e.g. lang-suffixed names) is a no-op here.
+    if (after === before) return result("already", op);
+    if (apply) write(op.target, after);
     return result("applied", op, `${matches.length} match(es)`);
   }
   // No matches: either already applied or the anchor is gone.
@@ -69,18 +73,21 @@ function runReplaceAll(op, { apply }) {
 
 /**
  * Replace a single exact string. Reports `drifted` if the anchor is absent and
- * the replacement isn't already there.
+ * the replacement isn't already there. `find` may be an array of candidate
+ * anchors (e.g. pristine vs already-branded text) — the first present wins.
  */
 function runReplaceString(op, { apply }) {
   if (!existsSync(abs(op.target))) return result("drifted", op, "file missing");
   const before = read(op.target);
-  if (before.includes(op.replace) && !before.includes(op.find)) {
+  const finds = Array.isArray(op.find) ? op.find : [op.find];
+  const found = finds.find((f) => before.includes(f));
+  if (before.includes(op.replace) && found === undefined) {
     return result("already", op);
   }
-  if (!before.includes(op.find)) {
-    return result("drifted", op, `anchor not found: ${truncate(op.find)}`);
+  if (found === undefined) {
+    return result("drifted", op, `anchor not found: ${truncate(finds[0])}`);
   }
-  if (apply) write(op.target, before.split(op.find).join(op.replace));
+  if (apply) write(op.target, before.split(found).join(op.replace));
   return result("applied", op);
 }
 
@@ -112,6 +119,64 @@ function runWriteFile(op, { apply }) {
   return result("applied", op);
 }
 
+function rxEscape(s) {
+  return s.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+}
+
+/**
+ * Merge distributor-supplied translations (op.source = a brand/i18n/<lang>.json
+ * map of key -> string) into an upstream locale file (op.target =
+ * apps/app/src/i18n/locales/<lang>.ts). For each key: replace the value in place
+ * if the key already exists, otherwise insert a new entry before the closing
+ * `} as const;`. Values run through op.substitutions ({token: replacement}) so
+ * the kit JSON can stay brand-agnostic (e.g. "{BRAND}" -> displayName).
+ * Idempotent and, being a non-writeFile op, reverted by `--revert` via git
+ * checkout — the upstream locale file stays clean in commits.
+ */
+function runMergeLocale(op, { apply }) {
+  if (!existsSync(abs(op.target))) return result("drifted", op, "locale file missing");
+  if (!op.source || !existsSync(abs(op.source))) {
+    return result("skipped", op, `no translations file: ${op.source ?? "(none)"}`);
+  }
+  let translations;
+  try {
+    translations = JSON.parse(readFileSync(abs(op.source), "utf8"));
+  } catch (error) {
+    return result("error", op, `invalid JSON in ${op.source}: ${error.message}`);
+  }
+  const before = read(op.target);
+  const eol = before.includes("\r\n") ? "\r\n" : "\n";
+  let body = before;
+  const toAppend = [];
+  for (const [key, rawValue] of Object.entries(translations)) {
+    let value = String(rawValue);
+    for (const [token, replacement] of Object.entries(op.substitutions ?? {})) {
+      value = value.replaceAll(token, replacement);
+    }
+    const enc = JSON.stringify(value); // safely quoted + escaped TS string literal
+    const line = `  "${key}": ${enc},`;
+    // Match an existing `  "key": "…",` entry (any value, optional trailing comma).
+    const keyRe = new RegExp(
+      `^[ \\t]*"${rxEscape(key)}":[ \\t]*"(?:[^"\\\\]|\\\\.)*",?[ \\t]*$`,
+      "m",
+    );
+    if (keyRe.test(body)) {
+      body = body.replace(keyRe, () => line); // fn replacement → `$` in value is literal
+    } else {
+      toAppend.push(line);
+    }
+  }
+  if (toAppend.length > 0) {
+    const marker = "} as const;";
+    const idx = body.lastIndexOf(marker);
+    if (idx === -1) return result("drifted", op, "no `} as const;` insertion point");
+    body = body.slice(0, idx) + toAppend.join(eol) + eol + body.slice(idx);
+  }
+  if (body === before) return result("already", op);
+  if (apply) write(op.target, body);
+  return result("applied", op, `${Object.keys(translations).length} keys`);
+}
+
 function truncate(s, n = 60) {
   const one = String(s).replace(/\s+/g, " ").trim();
   return one.length > n ? `${one.slice(0, n)}…` : one;
@@ -123,6 +188,7 @@ const RUNNERS = {
   replaceString: runReplaceString,
   injectBefore: runInjectBefore,
   writeFile: runWriteFile,
+  mergeLocale: runMergeLocale,
 };
 
 /** Run one operation. `apply=false` = dry-run (report only). */

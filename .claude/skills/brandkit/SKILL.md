@@ -55,10 +55,14 @@ corrupted — a drifted op simply does nothing until re-pinned.
 defaulting to `true`:
 
 `brandName` · `accentColor` · `assets` · `desktopIdentity` (appId/productName/
-deep-link scheme) · `providers` (opencode.json + picker filter) ·
-`welcomeOverride` (reroute) · `cloudHide` (master switch; `cloud.hide` must
-also be true) · `language` (single-language variant; active only for a
-non-English build).
+artifact name/deep-link scheme/own data+install dirs/update feed/unsigned-mac) ·
+`providers` (opencode.json + packaged-runtime default model + picker/connect
+filters + inline key card) · `welcomeOverride` (reroute) · `cloudHide` (master
+switch; `cloud.hide` must also be true — hides settings tabs, sign-in, promos,
+remote-worker surfaces) · `language` (single-language variant; active only for
+a non-English build) · `trim` (settings reduced to Preferences/Permissions/
+Extensions + AI/Appearance/Environment, no Marketplace/Docs/Feedback,
+about:blank new tabs).
 
 Semantics: `apply.mjs` is a projection of the config onto the working tree.
 A group toggled **off** is reported as `∅ off` and its footprint is *cleaned up*
@@ -76,8 +80,9 @@ surfaces replaced/hidden out of the box.
 
 `language.default` in the config (or the `BRANDKIT_LANG` env var, which wins)
 picks the build's language. Any non-`en` value produces a **hard-locked**
-single-language edition: that locale is forced on every launch and the
-Appearance language switcher is hidden. `en` (the default) is the normal
+single-language edition: that locale is forced on every launch (including over
+a stored preference), the Appearance language switcher is hidden, and the
+artifact name gets a `-<lang>` suffix. `en` (the default) is the normal
 multi-language app. The lang ops are always in the op list, so an English
 apply automatically cleans up a previous variant's edits — alternate freely:
 
@@ -85,6 +90,20 @@ apply automatically cleans up a previous variant's edits — alternate freely:
 node scripts/brandkit/apply.mjs                    # English build
 BRANDKIT_LANG=zh node scripts/brandkit/apply.mjs   # Chinese build (locked)
 ```
+
+Variant builds also pull translation overlays from `brand/i18n/`:
+
+- `brand/i18n/<lang>.json` — key → string map merged into the upstream locale
+  file (`apps/app/src/i18n/locales/<lang>.ts`) at build time via `mergeLocale`.
+  `{BRAND}` in values resolves to the display name.
+- `brand/i18n/<lang>.ui.json` — `{ "<file>": { "English literal": "译文" } }`
+  overrides for hardcoded (non-i18n) component strings. `{BRAND}` works on both
+  sides; these ops run BEFORE the brand-name ops and anchor on pristine OR
+  already-branded text, so `--check` and alternating applies both stay clean.
+- `brand.nameByLang` / `providers.default.displayNameByLang` /
+  `welcomeByLang.<lang>` — language-aware display name, model label, and
+  welcome copy. NOTE: if you set `nameByLang`, run `--revert` before switching
+  languages (the brand-name replaceAll can't retarget a previous alias).
 
 `apply.mjs` also patches `apps/app/package.json`'s `build` script to use
 `vite.brandkit.config.mts`, so `pnpm --filter @openwork/desktop
@@ -105,18 +124,6 @@ The welcome page (hero copy, steps, feature cards, `showSignIn`) is customized v
 `applied` (changed) · `already` (no-op) · `drifted` (anchor gone — fix the op) ·
 `skipped` (optional asset missing) · `pending` (anchor not yet wired) ·
 `error` (unexpected).
-
-## Known pending ops (wire when needed)
-
-- `cloud:sidebar-workers` — hide the "Add a worker / Connect remote" entry in
-  `apps/app/src/react-app/domains/session/sidebar/app-sidebar.tsx`. Not a
-  security gap (remote workers need Den sign-in, which is disabled), just polish.
-  Careful: "workspace" also means local folders — scope the anchor to the
-  *remote/connect* action only.
-- `providers:ui-filter` — filter the model picker in
-  `apps/app/src/components/model-select.tsx` to `providers.allowed`. `opencode.json`
-  already sets the default model; this op is about hiding the other 50+ providers
-  from the picker UI.
 
 ## Rules
 

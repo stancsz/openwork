@@ -51,6 +51,11 @@
           "type": "boolean",
           "default": true,
           "description": "Master switch for the single-language variant ops. Effective only for a non-English build (language.default or BRANDKIT_LANG)."
+        },
+        "trim": {
+          "type": "boolean",
+          "default": true,
+          "description": "Trim the app surface: settings reduced to Preferences/Permissions/Extensions + AI/Appearance/Environment, no Marketplace pane, no Docs/Feedback buttons, browser new-tab opens about:blank."
         }
       }
     },
@@ -78,6 +83,11 @@
         "shortName": {
           "type": "string",
           "description": "Optional short name for tight spaces. Defaults to `name`."
+        },
+        "nameByLang": {
+          "type": "object",
+          "description": "Language-aware display name shown in the UI + window title (e.g. {\"zh\": \"Mini助手\"}). `name` stays the ASCII base for appId/scheme/artifact/install-dir.",
+          "additionalProperties": { "type": "string" }
         },
         "accentColor": {
           "type": "string",
@@ -119,6 +129,20 @@
           "type": "string",
           "description": "Custom URL scheme for deep links (replaces 'openwork'). Lowercase, no ':' or '//'.",
           "pattern": "^[a-z][a-z0-9-]*$"
+        },
+        "productName": {
+          "type": "string",
+          "description": "Packaged app / exe / .app filename (electron-builder productName). Defaults to brand.name. Must be filesystem-safe."
+        },
+        "updateFeed": {
+          "type": "object",
+          "description": "GitHub releases feed for electron-updater. Without it a shipped branded app auto-updates itself back into stock OpenWork from upstream's releases.",
+          "additionalProperties": false,
+          "properties": {
+            "owner": { "type": "string" },
+            "repo": { "type": "string" }
+          },
+          "required": ["owner", "repo"]
         }
       }
     },
@@ -133,12 +157,26 @@
           "items": { "type": "string" },
           "minItems": 1
         },
+        "models": {
+          "type": "array",
+          "description": "Optional model-id whitelist within the allowed providers (e.g. 'anthropic/claude-sonnet-5'). Empty/omitted = all models of allowed providers.",
+          "items": { "type": "string" }
+        },
         "default": {
           "type": "object",
           "additionalProperties": false,
           "properties": {
             "providerID": { "type": "string" },
-            "modelID": { "type": "string" }
+            "modelID": { "type": "string" },
+            "displayName": {
+              "type": "string",
+              "description": "Friendly label rendered instead of the raw model id (e.g. \"Clinic AI\")."
+            },
+            "displayNameByLang": {
+              "type": "object",
+              "description": "Language-aware displayName override, keyed by locale id.",
+              "additionalProperties": { "type": "string" }
+            }
           }
         }
       }
@@ -156,6 +194,11 @@
           "description": "Whether to force account sign-in. Brand-kit default is false."
         }
       }
+    },
+    "welcomeByLang": {
+      "type": "object",
+      "description": "Per-language overrides layered on top of `welcome` for a single-language build (e.g. welcomeByLang.zh for BRANDKIT_LANG=zh). Same shape as `welcome`.",
+      "additionalProperties": { "type": "object" }
     },
     "welcome": {
       "type": "object",

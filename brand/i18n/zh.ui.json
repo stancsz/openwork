@@ -1,0 +1,116 @@
+{
+  "apps/app/src/react-app/domains/session/chat/session-page.tsx": {
+    "Add an AI model provider so your tasks can run.": "添加一个AI模型提供商，任务即可运行。",
+    "Try one of these to get started:": "试试以下操作开始：",
+    "Connect a model provider": "连接模型提供商",
+    "Add an API key for Anthropic, OpenAI, Google, or other providers": "添加你的模型提供商API密钥即可开始",
+    "aria-label=\"Find in conversation\"": "aria-label=\"在对话中查找\"",
+    "<TooltipContent>Find in conversation (⌘F)</TooltipContent>": "<TooltipContent>在对话中查找 (⌘F)</TooltipContent>",
+    "title={split ? \"Close split\" : \"Open in split view\"}": "title={split ? \"关闭分屏\" : \"打开分屏视图\"}",
+    "aria-label={split ? \"Close split\" : \"Open in split view\"}": "aria-label={split ? \"关闭分屏\" : \"打开分屏视图\"}",
+    "title=\"Close tab\"": "title=\"关闭标签页\"",
+    "aria-label=\"Close tab\"": "aria-label=\"关闭标签页\"",
+    "title=\"Browser\"": "title=\"浏览器\"",
+    "aria-label=\"Browser\"": "aria-label=\"浏览器\"",
+    "title=\"Voice Mode\"": "title=\"语音模式\"",
+    "aria-label=\"Voice Mode\"": "aria-label=\"语音模式\"",
+    "`Artifacts (${artifactTargetCount})` : \"No artifacts yet\"}": "`产出物 (${artifactTargetCount})` : \"暂无产出物\"}",
+    "title=\"Extensions\"": "title=\"扩展\"",
+    "aria-label=\"Extensions\"": "aria-label=\"扩展\""
+  },
+  "apps/app/src/components/chat/task-suggestions.tsx": {
+    "Connect a model provider to get started:": "连接模型提供商即可开始：",
+    "Try one of these:": "试试以下操作：",
+    "Connect a model provider": "连接模型提供商",
+    "Add an API key for Anthropic, OpenAI, Google, or others": "添加你的模型提供商API密钥即可开始",
+    "Connect an extension": "连接扩展",
+    "Add MCPs and integrations": "添加MCP和集成"
+  },
+  "apps/app/src/react-app/domains/workspace/create-workspace-local-panel.tsx": {
+    "No folder selected yet.": "尚未选择文件夹。",
+    "Want more analytics?": "想要更多分析？",
+    "Add a project name to group this workspace's sessions in Analytics.": "添加项目名称，在“分析”中对此工作区的会话进行分组。",
+    "Select folder": "选择文件夹"
+  },
+  "apps/app/src/react-app/domains/settings/shell/settings-page.tsx": {
+    "return \"AI Providers\";": "return \"AI 提供商\";",
+    "return \"Preferences\";": "return \"偏好设置\";",
+    "return \"Permissions\";": "return \"权限\";",
+    "return \"Settings\";": "return \"设置\";",
+    "return \"Connect services that provide AI models\";": "return \"连接提供 AI 模型的服务\";",
+    "return \"Default model, reasoning, and compaction\";": "return \"默认模型、推理与压缩\";",
+    "return \"Authorized folders and file access\";": "return \"已授权的文件夹和文件访问\";",
+    "return \"Overview of all settings\";": "return \"所有设置总览\";"
+  },
+  "apps/app/src/react-app/domains/settings/pages/general-view.tsx": {
+    "          Workspace": "          工作区",
+    "          Global": "          全局",
+    "title: \"Preferences\"": "title: \"偏好设置\"",
+    "desc: \"Default model, reasoning, and compaction.\"": "desc: \"默认模型、推理与压缩。\"",
+    "title: \"Permissions\"": "title: \"权限\"",
+    "desc: \"Authorized folders and file access.\"": "desc: \"已授权的文件夹和文件访问。\"",
+    "title: \"Extensions\"": "title: \"扩展\"",
+    "desc: \"MCPs, skills, plugins, and integrations.\"": "desc: \"MCP、技能、插件和集成。\"",
+    "title: \"AI Providers\"": "title: \"AI 提供商\"",
+    "desc: \"Connect services that provide AI models.\"": "desc: \"连接提供 AI 模型的服务。\"",
+    "title: \"Appearance\"": "title: \"外观\"",
+    "desc: \"Theme, font size, and display.\"": "desc: \"主题、字号和显示。\"",
+    "title: \"Environment\"": "title: \"环境\"",
+    "desc: \"Environment variables and paths.\"": "desc: \"环境变量和路径。\""
+  },
+  "apps/app/src/components/ui/sidebar.tsx": {
+    "Toggle Sidebar": "切换侧边栏"
+  },
+  "apps/app/src/react-app/domains/session/surface/find-bar.tsx": {
+    "placeholder=\"Find in conversation\"": "placeholder=\"在对话中查找\"",
+    "aria-label=\"Find in conversation\"": "aria-label=\"在对话中查找\""
+  },
+  "apps/app/src/components/model-select.tsx": {
+    "Change model": "更换模型"
+  },
+  "apps/app/src/react-app/domains/session/surface/session-surface.tsx": {
+    "Change model": "更换模型"
+  },
+  "apps/app/src/components/panel-tabs.tsx": {
+    "title=\"Close tab\"": "title=\"关闭标签页\"",
+    "aria-label={`Close tab: ${label}`}": "aria-label={`关闭标签页：${label}`}"
+  },
+  "apps/app/src/react-app/shell/session-route.tsx": {
+    "title: \"Additional workspaces are restricted\",": "title: \"工作区数量受限\",",
+    "\"Your organization administrator has restricted access to adding additional workspaces.\"": "\"你的组织管理员已限制添加更多工作区。\"",
+    "title: \"Search session messages\",": "title: \"搜索会话消息\",",
+    "detail: \"Deep search every session, including message content\",": "detail: \"深度搜索所有会话，包括消息内容\",",
+    "title: \"Find in conversation\",": "title: \"在对话中查找\",",
+    "detail: \"Search within the current conversation\",": "detail: \"在当前对话中搜索\",",
+    "title: terminalOpen ? \"Hide terminal\" : \"Show terminal\",": "title: terminalOpen ? \"隐藏终端\" : \"显示终端\",",
+    "detail: \"Toggle the integrated terminal panel for this workspace\",": "detail: \"切换此工作区的集成终端面板\",",
+    "title: \"Next session tab\",": "title: \"下一个会话标签页\",",
+    "detail: \"Switch to the next session in this workspace\",": "detail: \"切换到此工作区的下一个会话\",",
+    "title: \"Previous session tab\",": "title: \"上一个会话标签页\",",
+    "detail: \"Switch to the previous session in this workspace\",": "detail: \"切换到此工作区的上一个会话\","
+  },
+  "apps/app/src/react-app/domains/settings/panels/authorized-folders-panel.tsx": {
+    "Add folder": "添加文件夹"
+  },
+  "apps/app/src/react-app/domains/settings/pages/mcp-view.tsx": {
+    "placeholder=\"Search extensions...\"": "placeholder=\"搜索扩展…\"",
+    "{f === \"all\" ? \"All\" : f === \"mcp\" ? \"MCPs\" : \"Skills\"}": "{f === \"all\" ? \"全部\" : f === \"mcp\" ? \"MCP\" : \"技能\"}",
+    "{showHidden ? \"Showing hidden\" : hiddenOrPolicyCount > 0 ? `Show hidden (${hiddenOrPolicyCount})` : \"Show hidden\"}": "{showHidden ? \"已显示隐藏项\" : hiddenOrPolicyCount > 0 ? `显示隐藏项 (${hiddenOrPolicyCount})` : \"显示隐藏项\"}",
+    "From GitHub": "从GitHub",
+    "\"View details\"": "\"查看详情\""
+  },
+  "apps/app/src/react-app/domains/connections/store.ts": {
+    "\"No MCP servers configured yet.\"": "\"尚未配置MCP服务器。\""
+  },
+  "apps/app/src/app/extensions.ts": {
+    "name: \"{BRAND} Browser\",": "name: \"{BRAND}浏览器\",",
+    "description: \"Automate the built-in browser panel that stays visible inside {BRAND}.\",": "description: \"自动执行内置浏览器面板中的操作，该面板会一直在{BRAND}中保持可见。\",",
+    "name: \"Computer Use\",": "name: \"电脑控制\",",
+    "description: \"Mac only: control Mac apps through semantic accessibility refs, screenshots, background-safe clicks, keyboard input, and strict mode.\",": "description: \"仅限Mac：通过语义化的辅助功能引用、截图、后台安全点击、键盘输入和严格模式来控制Mac应用。\",",
+    "name: \"OpenAI Image Gen\",": "name: \"OpenAI 图像生成\",",
+    "description: \"Generate image artifacts with gpt-image-2.\",": "description: \"使用gpt-image-2生成图像产出物。\",",
+    "name: \"Voice Mode\",": "name: \"语音模式\",",
+    "description: \"Talk to {BRAND} through a Realtime voice panel that drives the same semantic UI controls as {BRAND} UI MCP.\",": "description: \"通过实时语音面板与{BRAND}对话，该面板驱动的语义化界面控件与{BRAND} UI MCP相同。\",",
+    "description: \"Let {BRAND} help with meetings, selected Drive files, and Gmail drafts.\",": "description: \"让{BRAND}协助处理会议、选定的Drive文件和Gmail草稿。\","
+  }
+}
