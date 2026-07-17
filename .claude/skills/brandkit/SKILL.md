@@ -49,6 +49,47 @@ corrupted — a drifted op simply does nothing until re-pinned.
 - `scripts/brandkit/apply.mjs` — orchestrator (`--check`, `--revert`).
 - `scripts/brandkit/vite-reroute-plugin.mjs` — the **reroute** plugin: replaces a whole module with a brand-owned override at resolve time, without editing the target's source.
 
+## Feature toggles
+
+`brand.config.json` has a `features` block — one boolean per override group, all
+defaulting to `true`:
+
+`brandName` · `accentColor` · `assets` · `desktopIdentity` (appId/productName/
+deep-link scheme) · `providers` (opencode.json + picker filter) ·
+`welcomeOverride` (reroute) · `cloudHide` (master switch; `cloud.hide` must
+also be true) · `language` (single-language variant; active only for a
+non-English build).
+
+Semantics: `apply.mjs` is a projection of the config onto the working tree.
+A group toggled **off** is reported as `∅ off` and its footprint is *cleaned up*
+on apply (tracked targets `git checkout`-ed, generated files removed) — targets
+shared with an enabled group are re-applied right after, so flipping a toggle
+never needs a manual revert. `--revert` always covers every group regardless of
+toggles. `vite.brandkit.config.mts` is always generated (empty reroute map when
+`welcomeOverride` is off) so the build command never changes.
+
+The default config ships as **MiniWork** (`com.miniwork.app`, scheme
+`miniwork`) with all toggles on and cloud hidden — i.e. all OpenWork-brand
+surfaces replaced/hidden out of the box.
+
+## Language variants (en / zh from one checkout)
+
+`language.default` in the config (or the `BRANDKIT_LANG` env var, which wins)
+picks the build's language. Any non-`en` value produces a **hard-locked**
+single-language edition: that locale is forced on every launch and the
+Appearance language switcher is hidden. `en` (the default) is the normal
+multi-language app. The lang ops are always in the op list, so an English
+apply automatically cleans up a previous variant's edits — alternate freely:
+
+```bash
+node scripts/brandkit/apply.mjs                    # English build
+BRANDKIT_LANG=zh node scripts/brandkit/apply.mjs   # Chinese build (locked)
+```
+
+`apply.mjs` also patches `apps/app/package.json`'s `build` script to use
+`vite.brandkit.config.mts`, so `pnpm --filter @openwork/desktop
+package:electron` picks up the reroute overrides in packaged builds.
+
 ## Three levels of touch
 
 1. **Config** — no file touched (`requireSignin`, `opencode.json`).

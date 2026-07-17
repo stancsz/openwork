@@ -7,6 +7,65 @@
   "required": ["brand"],
   "properties": {
     "$schema": { "type": "string" },
+    "features": {
+      "type": "object",
+      "additionalProperties": false,
+      "description": "Per-group toggles for the brand kit's override features. Everything defaults to true; set a key to false to leave that surface stock. On apply, a disabled group's working-tree edits are reset and its generated files removed.",
+      "properties": {
+        "brandName": {
+          "type": "boolean",
+          "default": true,
+          "description": "Replace the standalone word 'OpenWork' with brand.name in UI strings, window title, and locales."
+        },
+        "accentColor": {
+          "type": "boolean",
+          "default": true,
+          "description": "Apply brand.accentColor as the default UI accent."
+        },
+        "assets": {
+          "type": "boolean",
+          "default": true,
+          "description": "Overwrite logo/favicon/desktop-icon files with the ones in brand.assets."
+        },
+        "desktopIdentity": {
+          "type": "boolean",
+          "default": true,
+          "description": "Rewrite electron-builder appId/productName and the deep-link scheme."
+        },
+        "providers": {
+          "type": "boolean",
+          "default": true,
+          "description": "Generate opencode.json with the default model and (when wired) filter the provider picker to providers.allowed."
+        },
+        "welcomeOverride": {
+          "type": "boolean",
+          "default": true,
+          "description": "Generate the brand-owned welcome page + vite.brandkit.config.mts reroute."
+        },
+        "cloudHide": {
+          "type": "boolean",
+          "default": true,
+          "description": "Master switch for the cloud-hiding ops. Effective only when cloud.hide is also true."
+        },
+        "language": {
+          "type": "boolean",
+          "default": true,
+          "description": "Master switch for the single-language variant ops. Effective only for a non-English build (language.default or BRANDKIT_LANG)."
+        }
+      }
+    },
+    "language": {
+      "type": "object",
+      "additionalProperties": false,
+      "description": "Single-language variant. A non-'en' default builds a hard-locked edition: that locale is forced on every launch and the Appearance language switcher is hidden. Overridable at build time with the BRANDKIT_LANG env var, so one checkout can emit both an English and a localized installer.",
+      "properties": {
+        "default": {
+          "type": "string",
+          "default": "en",
+          "description": "Locale id matching a file in apps/app/src/i18n/locales (e.g. 'zh'). 'en' = normal multi-language app."
+        }
+      }
+    },
     "brand": {
       "type": "object",
       "additionalProperties": false,
@@ -106,6 +165,22 @@
         "showSignIn": {
           "type": "boolean",
           "description": "Show the 'Joining a team? Sign in' link. Default false."
+        },
+        "title": {
+          "type": "string",
+          "description": "Hero title. Omit to fall back to the app's i18n string."
+        },
+        "subtitle": {
+          "type": "string",
+          "description": "Hero subtitle. Omit to fall back to the app's i18n string."
+        },
+        "getStartedHeading": {
+          "type": "string",
+          "description": "Heading above the numbered steps. Default 'Get started'."
+        },
+        "getStartedLabel": {
+          "type": "string",
+          "description": "Primary button label. Omit to fall back to the app's i18n string."
         },
         "showcaseTitle": {
           "type": "array",

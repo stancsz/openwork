@@ -1,8 +1,21 @@
 {
   "$schema": "./brand.schema.json",
+  "features": {
+    "brandName": true,
+    "accentColor": true,
+    "assets": true,
+    "desktopIdentity": true,
+    "providers": true,
+    "welcomeOverride": true,
+    "cloudHide": true,
+    "language": true
+  },
+  "language": {
+    "default": "en"
+  },
   "brand": {
-    "name": "Acme Work",
-    "shortName": "Acme",
+    "name": "MiniWork",
+    "shortName": "Mini",
     "accentColor": "iris",
     "assets": {
       "mark": "brand/mark.svg",
@@ -17,8 +30,8 @@
     }
   },
   "desktop": {
-    "appId": "com.acme.work",
-    "deepLinkScheme": "acmework"
+    "appId": "com.miniwork.app",
+    "deepLinkScheme": "miniwork"
   },
   "providers": {
     "allowed": ["openrouter"],
@@ -30,14 +43,14 @@
   },
   "welcome": {
     "showSignIn": false,
-    "title": "Get more done with Acme Work",
+    "title": "Get more done with MiniWork",
     "subtitle": "Your AI workspace for everyday tasks.",
     "getStartedHeading": "How it works",
     "getStartedLabel": "Choose a folder →",
     "showcaseTitle": ["Your computer,", "but it works for you."],
     "steps": [
       { "title": "Pick a folder", "desc": "Choose any folder on your machine to get started." },
-      { "title": "Chat", "desc": "Describe what you need. Acme Work handles the rest." },
+      { "title": "Chat", "desc": "Describe what you need. MiniWork handles the rest." },
       { "title": "Interact", "desc": "Review results, approve actions, and iterate." }
     ],
     "features": [
