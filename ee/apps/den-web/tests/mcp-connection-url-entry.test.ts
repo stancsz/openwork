@@ -32,4 +32,15 @@ describe("MCP URL entry UI contract", () => {
     expect(screen).not.toContain("existingConnectionUrls");
     expect(screen).not.toContain("onSelectPreset");
   });
+
+  test("offers one compact bulk control for long optional permission lists", () => {
+    const screen = readFileSync(screenPath, "utf8");
+
+    expect(screen).toContain("optionalScopes.length > OPTIONAL_SCOPE_BULK_TOGGLE_THRESHOLD");
+    expect(screen).toContain('role="checkbox"');
+    expect(screen).toContain('"mixed"');
+    expect(screen).toContain('"Deselect all" : "Select all"');
+    expect(screen).toContain('data-testid="toggle-all-optional-permissions"');
+    expect(screen).toContain("toggleAllOptionalScopes(current, optionalScopes)");
+  });
 });
