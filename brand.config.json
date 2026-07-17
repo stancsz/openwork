@@ -8,7 +8,8 @@
     "providers": true,
     "welcomeOverride": true,
     "cloudHide": true,
-    "language": true
+    "language": true,
+    "trim": true
   },
   "language": {
     "default": "en"
@@ -31,11 +32,21 @@
   },
   "desktop": {
     "appId": "com.miniwork.app",
-    "deepLinkScheme": "miniwork"
+    "deepLinkScheme": "miniwork",
+    "updateFeed": {
+      "owner": "stancsz",
+      "repo": "openwork"
+    }
   },
   "providers": {
-    "allowed": ["openrouter"],
-    "default": { "providerID": "openrouter", "modelID": "anthropic/claude-3.5-sonnet" }
+    "allowed": [
+      "openrouter"
+    ],
+    "models": [],
+    "default": {
+      "providerID": "openrouter",
+      "modelID": "anthropic/claude-3.5-sonnet"
+    }
   },
   "cloud": {
     "hide": true,
@@ -47,19 +58,101 @@
     "subtitle": "Your AI workspace for everyday tasks.",
     "getStartedHeading": "How it works",
     "getStartedLabel": "Choose a folder →",
-    "showcaseTitle": ["Your computer,", "but it works for you."],
+    "showcaseTitle": [
+      "Your computer,",
+      "but it works for you."
+    ],
     "steps": [
-      { "title": "Pick a folder", "desc": "Choose any folder on your machine to get started." },
-      { "title": "Chat", "desc": "Describe what you need. MiniWork handles the rest." },
-      { "title": "Interact", "desc": "Review results, approve actions, and iterate." }
+      {
+        "title": "Pick a folder",
+        "desc": "Choose any folder on your machine to get started."
+      },
+      {
+        "title": "Chat",
+        "desc": "Describe what you need. MiniWork handles the rest."
+      },
+      {
+        "title": "Interact",
+        "desc": "Review results, approve actions, and iterate."
+      }
     ],
     "features": [
-      { "title": "Edit spreadsheets", "desc": "Create, clean, and transform CSV and Excel files." },
-      { "title": "Control your browser", "desc": "Automate the built-in browser for repetitive web tasks." },
-      { "title": "Organize files", "desc": "Read, write, and manage files and folders." },
-      { "title": "Automate tasks", "desc": "Build reusable workflows with skills and commands." },
-      { "title": "Generate content", "desc": "Draft documents, emails, and reports." },
-      { "title": "Connect to APIs", "desc": "Plug into external services and tools via MCP." }
+      {
+        "title": "Edit spreadsheets",
+        "desc": "Create, clean, and transform CSV and Excel files."
+      },
+      {
+        "title": "Control your browser",
+        "desc": "Automate the built-in browser for repetitive web tasks."
+      },
+      {
+        "title": "Organize files",
+        "desc": "Read, write, and manage files and folders."
+      },
+      {
+        "title": "Automate tasks",
+        "desc": "Build reusable workflows with skills and commands."
+      },
+      {
+        "title": "Generate content",
+        "desc": "Draft documents, emails, and reports."
+      },
+      {
+        "title": "Connect to APIs",
+        "desc": "Plug into external services and tools via MCP."
+      }
     ]
+  },
+  "welcomeByLang": {
+    "zh": {
+      "title": "用 MiniWork 高效完成工作",
+      "subtitle": "你的日常任务 AI 工作台。",
+      "getStartedHeading": "使用方法",
+      "getStartedLabel": "选择文件夹 →",
+      "showcaseTitle": [
+        "你的电脑，",
+        "为你工作。"
+      ],
+      "steps": [
+        {
+          "title": "选择文件夹",
+          "desc": "选择电脑上的任意文件夹即可开始。"
+        },
+        {
+          "title": "对话",
+          "desc": "描述你的需求，MiniWork 帮你完成。"
+        },
+        {
+          "title": "确认",
+          "desc": "查看结果、批准操作、持续迭代。"
+        }
+      ],
+      "features": [
+        {
+          "title": "编辑表格",
+          "desc": "创建、清理和转换 CSV 与 Excel 文件。"
+        },
+        {
+          "title": "操控浏览器",
+          "desc": "用内置浏览器自动完成重复性网页任务。"
+        },
+        {
+          "title": "整理文件",
+          "desc": "读取、写入和管理文件与文件夹。"
+        },
+        {
+          "title": "自动化任务",
+          "desc": "用技能和命令搭建可复用的工作流。"
+        },
+        {
+          "title": "生成内容",
+          "desc": "起草文档、邮件和报告。"
+        },
+        {
+          "title": "连接 API",
+          "desc": "通过 MCP 接入外部服务和工具。"
+        }
+      ]
+    }
   }
 }

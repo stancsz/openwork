@@ -28,6 +28,7 @@ export const FEATURE_DEFAULTS = {
   welcomeOverride: true,
   cloudHide: true,
   language: true,
+  trim: true,
 };
 
 function normalizeFeatures(raw) {
@@ -99,41 +100,74 @@ export function loadConfig() {
     );
   }
 
+  // Per-language welcome override: welcomeByLang.<lang> layers over the base
+  // `welcome` block so a locked-language build shows localized hero copy.
+  const welcomeRaw = {
+    ...(raw.welcome ?? {}),
+    ...(raw.welcomeByLang?.[language.default] ?? {}),
+  };
+
   return {
     features: normalizeFeatures(raw.features),
     language,
     brand: {
+      // `name` is the ASCII base — drives appId/scheme/artifact/install-dir and
+      // the packaged productName (so exe/app filenames stay ASCII-safe).
       name: brand.name,
       shortName: brand.shortName ?? brand.name,
+      // `displayName` is the language-aware brand shown in the UI + window title
+      // (brand.nameByLang.<lang> overrides `name`, e.g. zh → "Mini助手").
+      displayName: brand.nameByLang?.[language.default] ?? brand.name,
       accentColor: brand.accentColor,
       assets: brand.assets ?? {},
     },
     desktop: {
       appId: raw.desktop?.appId ?? "com.differentai.openwork",
       deepLinkScheme: scheme,
+      // Packaged app / exe / .app filename (electron-builder productName). Kept
+      // separate from `brand.name` so the bundle can be short (e.g. "Mini")
+      // while the UI shows the full display name. Must be filesystem-safe.
+      productName: raw.desktop?.productName ?? null,
+      // Optional { owner, repo } GitHub feed for electron-updater. When set,
+      // the packaged app checks THIS repo's releases instead of upstream
+      // different-ai/openwork — without it a branded build can auto-update
+      // itself back into stock OpenWork.
+      updateFeed:
+        raw.desktop?.updateFeed?.owner && raw.desktop?.updateFeed?.repo
+          ? { owner: raw.desktop.updateFeed.owner, repo: raw.desktop.updateFeed.repo }
+          : null,
     },
     providers: {
       allowed: raw.providers?.allowed ?? [],
-      default: raw.providers?.default ?? null,
+      // Optional model-id whitelist within the allowed providers. Empty = all.
+      models: raw.providers?.models ?? [],
+      default: raw.providers?.default
+        ? {
+            ...raw.providers.default,
+            displayName:
+              raw.providers.default.displayNameByLang?.[language.default] ??
+              raw.providers.default.displayName ?? null,
+          }
+        : null,
     },
     cloud: {
       hide: raw.cloud?.hide ?? true,
       requireSignin: raw.cloud?.requireSignin ?? false,
     },
     welcome: {
-      showSignIn: raw.welcome?.showSignIn ?? false,
+      showSignIn: welcomeRaw.showSignIn ?? false,
       // null → the override falls back to the app's i18n string for that slot.
-      title: raw.welcome?.title ?? null,
-      subtitle: raw.welcome?.subtitle ?? null,
-      getStartedHeading: raw.welcome?.getStartedHeading ?? "Get started",
-      getStartedLabel: raw.welcome?.getStartedLabel ?? null,
-      showcaseTitle: raw.welcome?.showcaseTitle ?? ["Your computer,", "but it works for you."],
-      steps: raw.welcome?.steps ?? [
+      title: welcomeRaw.title ?? null,
+      subtitle: welcomeRaw.subtitle ?? null,
+      getStartedHeading: welcomeRaw.getStartedHeading ?? "Get started",
+      getStartedLabel: welcomeRaw.getStartedLabel ?? null,
+      showcaseTitle: welcomeRaw.showcaseTitle ?? ["Your computer,", "but it works for you."],
+      steps: welcomeRaw.steps ?? [
         { title: "Pick a folder", desc: "Choose any folder on your machine to get started." },
         { title: "Chat", desc: `Describe what you need. ${brand.name} handles the rest.` },
         { title: "Interact", desc: "Review results, approve actions, and iterate." },
       ],
-      features: raw.welcome?.features ?? [],
+      features: welcomeRaw.features ?? [],
     },
   };
 }
