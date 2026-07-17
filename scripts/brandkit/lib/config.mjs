@@ -18,6 +18,34 @@ const RADIX_COLORS = new Set([
   "green", "grass", "lime", "mint", "sky",
 ]);
 
+/** Feature groups a distributor can toggle in brand.config.json. All default on. */
+export const FEATURE_DEFAULTS = {
+  brandName: true,
+  accentColor: true,
+  assets: true,
+  desktopIdentity: true,
+  providers: true,
+  welcomeOverride: true,
+  cloudHide: true,
+  language: true,
+};
+
+function normalizeFeatures(raw) {
+  const features = { ...FEATURE_DEFAULTS };
+  for (const [key, value] of Object.entries(raw ?? {})) {
+    if (!(key in FEATURE_DEFAULTS)) {
+      throw new Error(
+        `brand.config.json: unknown feature "${key}" — known features: ${Object.keys(FEATURE_DEFAULTS).join(", ")}.`,
+      );
+    }
+    if (typeof value !== "boolean") {
+      throw new Error(`brand.config.json: features.${key} must be a boolean.`);
+    }
+    features[key] = value;
+  }
+  return features;
+}
+
 /**
  * Read and normalize the brand kit config. Throws with a readable message
  * on the handful of things that would otherwise produce a broken build.
@@ -53,7 +81,27 @@ export function loadConfig() {
     );
   }
 
+  // Language: from brand.config.json `language.default`, overridable at build
+  // time with BRANDKIT_LANG. Any non-"en" value builds a hard-locked
+  // single-language variant (default locale forced, switcher hidden); unset or
+  // "en" builds the normal multi-language app. This is what lets one checkout
+  // emit both an English and a Chinese build.
+  const envLang = (process.env.BRANDKIT_LANG ?? "").trim();
+  const language = {
+    default: envLang !== "" ? envLang : (raw.language?.default ?? "en"),
+  };
+  if (
+    language.default !== "en" &&
+    !existsSync(resolve(REPO_ROOT, `apps/app/src/i18n/locales/${language.default}.ts`))
+  ) {
+    throw new Error(
+      `language "${language.default}" (from ${envLang ? "BRANDKIT_LANG" : "brand.config.json language.default"}) has no locale file in apps/app/src/i18n/locales/.`,
+    );
+  }
+
   return {
+    features: normalizeFeatures(raw.features),
+    language,
     brand: {
       name: brand.name,
       shortName: brand.shortName ?? brand.name,

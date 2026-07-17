@@ -14,7 +14,7 @@ import { appendFileSync, readFileSync, rmSync, existsSync } from "node:fs";
 import { resolve } from "node:path";
 
 import { loadConfig, REPO_ROOT } from "./lib/config.mjs";
-import { buildOperations } from "./operations.mjs";
+import { buildOperations, enabledFeatures } from "./operations.mjs";
 import { runOperation, trackedTargets } from "./lib/ops.mjs";
 
 const args = new Set(process.argv.slice(2));
@@ -27,6 +27,7 @@ const GLYPH = {
   drifted: "⚠ DRIFTED ",
   skipped: "↷ skipped ",
   pending: "⧗ pending ",
+  off: "∅ off     ",
   error: "✗ ERROR   ",
 };
 
@@ -34,7 +35,13 @@ function main() {
   const config = loadConfig();
   const operations = buildOperations(config);
 
+  // --revert always covers every op, toggles included, so it cleans a tree
+  // that was applied under a different features config.
   if (REVERT) return revert(operations);
+
+  const features = enabledFeatures(config);
+  const enabledOps = operations.filter((op) => features[op.feature] !== false);
+  const disabledOps = operations.filter((op) => features[op.feature] === false);
 
   // Generated files are ad-hoc: never committed. Registering them in
   // .git/info/exclude (local, not tracked) means they can't be accidentally
@@ -49,11 +56,26 @@ function main() {
 
   console.log(
     `\nBrand kit: ${config.brand.name}  (accent: ${config.brand.accentColor}, ` +
-      `scheme: ${config.desktop.deepLinkScheme}, cloud: ${config.cloud.hide ? "hidden" : "shown"})`,
+      `scheme: ${config.desktop.deepLinkScheme}, cloud: ${features.cloudHide ? "hidden" : "shown"})`,
   );
+  const off = Object.entries(features).filter(([, on]) => !on).map(([name]) => name);
+  if (off.length) console.log(`Features off: ${off.join(", ")}`);
   console.log(CHECK ? "Mode: CHECK (no files written)\n" : "Mode: APPLY\n");
 
-  const results = operations.map((op) => runOperation(op, { apply: !CHECK }));
+  // Disabled groups are cleaned up BEFORE enabled ops run: a shared target
+  // (e.g. electron/main.mjs, touched by both brandName and desktopIdentity)
+  // is checked out fresh, then the still-enabled ops re-apply their edits.
+  if (!CHECK) cleanupDisabled(disabledOps);
+  const offResults = disabledOps.map((op) => ({
+    status: "off",
+    id: op.id,
+    detail: `features.${op.feature} = false`,
+  }));
+
+  const results = [
+    ...offResults,
+    ...enabledOps.map((op) => runOperation(op, { apply: !CHECK })),
+  ];
 
   const counts = {};
   for (const r of results) {
@@ -118,6 +140,24 @@ function ensureGitExcludes(operations) {
     : "\n# brandkit (generated, ad-hoc — never committed)\n";
   appendFileSync(excludePath, `${header}${toAdd.join("\n")}\n`);
   return toAdd;
+}
+
+/**
+ * Undo a disabled feature group's footprint: git-checkout its tracked targets
+ * and delete its generated files. Enabled ops run after this and re-apply
+ * their own edits, so a target shared with an enabled group ends up correct.
+ */
+function cleanupDisabled(operations) {
+  if (operations.length === 0) return;
+  const tracked = trackedTargets(operations).filter((p) => existsSync(resolve(REPO_ROOT, p)));
+  if (tracked.length) {
+    execFileSync("git", ["checkout", "--", ...tracked], { cwd: REPO_ROOT, stdio: "inherit" });
+  }
+  for (const op of operations) {
+    if (op.type !== "writeFile" || !op.target) continue;
+    const file = resolve(REPO_ROOT, op.target);
+    if (existsSync(file)) rmSync(file);
+  }
 }
 
 function revert(operations) {
