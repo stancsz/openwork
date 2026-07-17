@@ -183,6 +183,24 @@ export function buildOperations(config) {
     { id: "asset:desktop-ico", feature: "assets", type: "overwriteAsset", source: a.desktopIconIco, target: "apps/desktop/resources/icons/icon.ico" },
     { id: "asset:desktop-icns", feature: "assets", type: "overwriteAsset", source: a.desktopIconIcns, target: "apps/desktop/resources/icons/icon.icns" },
 
+    // main.mjs resolves process.resourcesPath/icons/icon.png at runtime for the
+    // Windows taskbar identity (registerWindowsDisplayShortcut writes the shortcut
+    // ico from it); upstream's `files:` never packages resources/, so without this
+    // the runtime falls back to app.getFileIcon on the computed Programs path,
+    // which yields a corrupt image on parked (non-installed) builds — blank icon.
+    {
+      id: "pkg:icon-resource",
+      feature: "assets",
+      type: "injectBefore",
+      target: "apps/desktop/electron-builder.yml",
+      marker: "brandkit:icon-resource",
+      anchor: "  - from: ../app/dist",
+      block:
+        `  # brandkit:icon-resource — ship icon.png for the runtime taskbar identity\r\n` +
+        `  - from: resources/icons/icon.png\r\n` +
+        `    to: icons/icon.png\r\n`,
+    },
+
     // ---- Packaged app identity (electron-builder.yml) ----------------------
     {
       id: "pkg:appId",

@@ -1,0 +1,173 @@
+name: Release MiniWork
+
+# Builds branded MiniWork desktop installers (en + zh editions) and publishes
+# them to a GitHub Release on this repo.
+#
+#   macOS runner   -> electron-builder --mac dmg   -> miniwork[-zh]-mac-*.dmg
+#   Windows runner -> electron-builder --win nsis  -> miniwork[-zh]-win-*.exe
+#
+# The MiniWork branding lives only in the brand kit (brand.config.json +
+# scripts/brandkit). This workflow runs `apply.mjs` (with BRANDKIT_LANG for the
+# Chinese edition) to layer it onto the upstream working tree at build time, so
+# the branch stays a clean OpenWork tree.
+#
+# Trigger by pushing a `miniwork-v*` tag (e.g. miniwork-v0.17.20) or via the
+# Actions tab. NOTE: we deliberately do NOT trigger on `v*` — the upstream
+# release workflow (release-macos-aarch64.yml) owns `v*` tags.
+# Artifacts are UNSIGNED for now (Gatekeeper / SmartScreen warnings expected).
+
+on:
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "Release tag to create/publish (e.g. miniwork-v0.17.20)"
+        required: true
+        type: string
+  push:
+    tags:
+      - "miniwork-v*"
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: macos-latest
+            platform: mac
+            lang: en
+          - os: macos-latest
+            platform: mac
+            lang: zh
+          - os: windows-latest
+            platform: win
+            lang: en
+          - os: windows-latest
+            platform: win
+            lang: zh
+    runs-on: ${{ matrix.os }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup pnpm
+        uses: pnpm/action-setup@v4
+        with:
+          version: 11.4.0
+
+      - name: Setup Node
+        uses: actions/setup-node@v6
+        with:
+          node-version: 24
+
+      - name: Setup Bun
+        uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: 1.3.10
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Apply MiniWork brand kit (${{ matrix.lang }})
+        env:
+          BRANDKIT_LANG: ${{ matrix.lang }}
+        run: node scripts/brandkit/apply.mjs
+
+      - name: Build desktop bundle
+        run: pnpm --filter @openwork/desktop run build:electron
+
+      - name: Package Windows installer
+        if: matrix.platform == 'win'
+        run: pnpm --dir apps/desktop exec electron-builder --config electron-builder.yml --win nsis --publish never
+
+      # macOS: the runner has no Apple Developer cert, so electron-builder's sign
+      # step no-ops and never even ad-hoc signs. afterPack has by then already
+      # rewritten the bundle (sidecar binaries), which invalidates Electron's own
+      # prebuilt signature — the result is an arm64 .app that macOS reports as
+      # "damaged". Fix: build the .app only, deep ad-hoc re-sign it ourselves
+      # (no hardened runtime), then package the signed app into a DMG with
+      # --prepackaged. Replace with Developer ID signing + notarization when we
+      # have an Apple account.
+      - name: Package + ad-hoc sign macOS app
+        if: matrix.platform == 'mac'
+        run: |
+          set -euo pipefail
+          cd apps/desktop
+
+          # 1) Build the .app only (afterPack lays down the sidecars here).
+          pnpm exec electron-builder --config electron-builder.yml --mac dir --publish never
+
+          APP_SRC=$(find dist-electron -maxdepth 2 -name 'MiniWork.app' -print -quit)
+          if [ -z "$APP_SRC" ]; then
+            echo "::error::MiniWork.app not found after --mac dir build"
+            ls -R dist-electron || true
+            exit 1
+          fi
+
+          # 2) Move it out of electron-builder's output dir so the DMG build
+          #    can't clean it away from under us.
+          STAGE="$RUNNER_TEMP/miniwork-app"
+          rm -rf "$STAGE" && mkdir -p "$STAGE"
+          cp -R "$APP_SRC" "$STAGE/"
+          APP="$STAGE/MiniWork.app"
+
+          # 3) Ad-hoc sign every Mach-O sidecar first (codesign --deep does NOT
+          #    reach loose executables in Resources), then deep-sign the bundle.
+          if [ -d "$APP/Contents/Resources/sidecars" ]; then
+            while IFS= read -r f; do
+              if file "$f" | grep -q 'Mach-O'; then
+                codesign --force --sign - "$f"
+              fi
+            done < <(find "$APP/Contents/Resources/sidecars" -type f)
+          fi
+          codesign --force --deep --sign - "$APP"
+          codesign --verify --deep --strict --verbose=2 "$APP"
+
+          # 4) Package the signed .app into a DMG (prepackaged => no re-sign).
+          pnpm exec electron-builder --config electron-builder.yml --mac dmg --prepackaged "$APP" --publish never
+
+      - name: Upload installer artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: miniwork-${{ matrix.platform }}-${{ matrix.lang }}
+          if-no-files-found: error
+          path: |
+            apps/desktop/dist-electron/miniwork-*.dmg
+            apps/desktop/dist-electron/miniwork-*.exe
+            apps/desktop/dist-electron/miniwork-*.blockmap
+
+  release:
+    needs: build
+    runs-on: ubuntu-latest
+    steps:
+      - name: Download installers
+        uses: actions/download-artifact@v4
+        with:
+          path: dist
+
+      - name: Publish release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ inputs.tag || github.ref_name }}
+          name: ${{ inputs.tag || github.ref_name }}
+          draft: false
+          fail_on_unmatched_files: true
+          body: |
+            MiniWork desktop — **unsigned** builds (SmartScreen / Gatekeeper warnings expected).
+            `-zh-` artifacts are the hard-locked Chinese edition (中文版).
+
+            ### Windows — `miniwork[-zh]-win-x64-*.exe`
+            SmartScreen may warn ("unknown publisher"). Click **More info → Run anyway**, then install.
+
+            ### macOS (Apple Silicon) — `miniwork[-zh]-mac-arm64-*.dmg`
+            1. Open the `.dmg` and drag **MiniWork** into **Applications**.
+            2. **Right-click** MiniWork in Applications → **Open** → **Open**.
+
+            If macOS still blocks it:
+            ```
+            xattr -dr com.apple.quarantine "/Applications/MiniWork.app"
+            ```
+          files: dist/**/*
