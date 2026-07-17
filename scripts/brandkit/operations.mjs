@@ -171,11 +171,13 @@ export function buildOperations(config) {
     // ---- Reroute: brand-owned welcome page (no source edit to the target) --
     // The override is served in place of the app's welcome-page.tsx via the
     // reroute Vite plugin; the original component is never modified.
+    // Generated INSIDE apps/app (not brand/) so react/jsx-runtime and the `@/`
+    // alias resolve from apps/app/node_modules in production Rollup builds.
     {
       id: "reroute:welcome-override",
       feature: "welcomeOverride",
       type: "writeFile",
-      target: "brand/overrides/welcome-page.tsx",
+      target: "apps/app/src/brandkit-generated/welcome-page.tsx",
       content: renderWelcomeOverride(config.welcome),
     },
     // Always generated (no feature tag) so `vite --config vite.brandkit.config.mts`
@@ -460,7 +462,7 @@ function renderBrandViteConfig(withWelcomeOverride) {
   const overrides = withWelcomeOverride
     ? `{
     [resolve(APP_ROOT, "src/react-app/domains/onboarding/welcome-page.tsx")]:
-      resolve(REPO_ROOT, "brand/overrides/welcome-page.tsx"),
+      resolve(APP_ROOT, "src/brandkit-generated/welcome-page.tsx"),
   }`
     : `/* features.welcomeOverride = false — no modules rerouted */ {}`;
 
