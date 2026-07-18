@@ -1,7 +1,7 @@
-name: Release MiniWork
+name: Release MiniWork + ClinicWork
 
-# Builds branded MiniWork desktop installers (en + zh editions) and publishes
-# them to a GitHub Release on this repo.
+# Builds the branded desktop installers — MiniWork AND ClinicWork, en + zh
+# editions each — and publishes them all to one GitHub Release on this repo.
 #
 #   macOS runner   -> electron-builder --mac dmg   -> miniwork[-zh]-mac-*.dmg
 #   Windows runner -> electron-builder --win nsis  -> miniwork[-zh]-win-*.exe
@@ -35,19 +35,14 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
+        platform: [mac, win]
+        brand: [miniwork, clinicwork]
+        lang: [en, zh]
         include:
-          - os: macos-latest
-            platform: mac
-            lang: en
-          - os: macos-latest
-            platform: mac
-            lang: zh
-          - os: windows-latest
-            platform: win
-            lang: en
-          - os: windows-latest
-            platform: win
-            lang: zh
+          - platform: mac
+            os: macos-latest
+          - platform: win
+            os: windows-latest
     runs-on: ${{ matrix.os }}
     steps:
       - name: Checkout
@@ -71,9 +66,10 @@ jobs:
       - name: Install dependencies
         run: pnpm install --frozen-lockfile
 
-      - name: Apply MiniWork brand kit (${{ matrix.lang }})
+      - name: Apply ${{ matrix.brand }} brand kit (${{ matrix.lang }})
         env:
           BRANDKIT_LANG: ${{ matrix.lang }}
+          BRANDKIT_CONFIG: ${{ matrix.brand == 'clinicwork' && 'brand.clinicwork.json' || 'brand.config.json' }}
         run: node scripts/brandkit/apply.mjs
 
       - name: Build desktop bundle
@@ -96,23 +92,24 @@ jobs:
         run: |
           set -euo pipefail
           cd apps/desktop
+          APP_NAME=$([ "${{ matrix.brand }}" = "clinicwork" ] && echo ClinicWork || echo MiniWork)
 
           # 1) Build the .app only (afterPack lays down the sidecars here).
           pnpm exec electron-builder --config electron-builder.yml --mac dir --publish never
 
-          APP_SRC=$(find dist-electron -maxdepth 2 -name 'MiniWork.app' -print -quit)
+          APP_SRC=$(find dist-electron -maxdepth 2 -name "$APP_NAME.app" -print -quit)
           if [ -z "$APP_SRC" ]; then
-            echo "::error::MiniWork.app not found after --mac dir build"
+            echo "::error::$APP_NAME.app not found after --mac dir build"
             ls -R dist-electron || true
             exit 1
           fi
 
           # 2) Move it out of electron-builder's output dir so the DMG build
           #    can't clean it away from under us.
-          STAGE="$RUNNER_TEMP/miniwork-app"
+          STAGE="$RUNNER_TEMP/${{ matrix.brand }}-app"
           rm -rf "$STAGE" && mkdir -p "$STAGE"
           cp -R "$APP_SRC" "$STAGE/"
-          APP="$STAGE/MiniWork.app"
+          APP="$STAGE/$APP_NAME.app"
 
           # 3) Ad-hoc sign every Mach-O sidecar first (codesign --deep does NOT
           #    reach loose executables in Resources), then deep-sign the bundle.
@@ -132,12 +129,12 @@ jobs:
       - name: Upload installer artifact
         uses: actions/upload-artifact@v4
         with:
-          name: miniwork-${{ matrix.platform }}-${{ matrix.lang }}
+          name: ${{ matrix.brand }}-${{ matrix.platform }}-${{ matrix.lang }}
           if-no-files-found: error
           path: |
-            apps/desktop/dist-electron/miniwork-*.dmg
-            apps/desktop/dist-electron/miniwork-*.exe
-            apps/desktop/dist-electron/miniwork-*.blockmap
+            apps/desktop/dist-electron/${{ matrix.brand }}-*.dmg
+            apps/desktop/dist-electron/${{ matrix.brand }}-*.exe
+            apps/desktop/dist-electron/${{ matrix.brand }}-*.blockmap
 
   release:
     needs: build
@@ -156,18 +153,18 @@ jobs:
           draft: false
           fail_on_unmatched_files: true
           body: |
-            MiniWork desktop — **unsigned** builds (SmartScreen / Gatekeeper warnings expected).
-            `-zh-` artifacts are the hard-locked Chinese edition (中文版).
+            MiniWork + ClinicWork desktop — **unsigned** builds (SmartScreen / Gatekeeper warnings expected).
+            `miniwork-*` is the general edition; `clinicwork-*` is the clinic edition. `-zh-` artifacts are the hard-locked Chinese editions (中文版).
 
-            ### Windows — `miniwork[-zh]-win-x64-*.exe`
+            ### Windows — `{miniwork|clinicwork}[-zh]-win-x64-*.exe`
             SmartScreen may warn ("unknown publisher"). Click **More info → Run anyway**, then install.
 
-            ### macOS (Apple Silicon) — `miniwork[-zh]-mac-arm64-*.dmg`
-            1. Open the `.dmg` and drag **MiniWork** into **Applications**.
-            2. **Right-click** MiniWork in Applications → **Open** → **Open**.
+            ### macOS (Apple Silicon) — `{miniwork|clinicwork}[-zh]-mac-arm64-*.dmg`
+            1. Open the `.dmg` and drag the app into **Applications**.
+            2. **Right-click** the app in Applications → **Open** → **Open**.
 
             If macOS still blocks it:
             ```
-            xattr -dr com.apple.quarantine "/Applications/MiniWork.app"
+            xattr -dr com.apple.quarantine "/Applications/MiniWork.app"   # or ClinicWork.app
             ```
           files: dist/**/*

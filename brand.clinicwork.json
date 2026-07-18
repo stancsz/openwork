@@ -1,0 +1,172 @@
+{
+  "$schema": "./brand.schema.json",
+  "features": {
+    "brandName": true,
+    "accentColor": true,
+    "assets": true,
+    "desktopIdentity": true,
+    "providers": true,
+    "welcomeOverride": true,
+    "cloudHide": true,
+    "language": true,
+    "trim": true
+  },
+  "language": {
+    "default": "en"
+  },
+  "brand": {
+    "name": "ClinicWork",
+    "shortName": "Clinic",
+    "accentColor": "teal",
+    "assets": {
+      "mark": "brand/clinicwork/mark.svg",
+      "logo": "brand/clinicwork/logo.svg",
+      "logoSquare": "brand/clinicwork/logo-square.svg",
+      "favicon32": "brand/clinicwork/favicon-32x32.png",
+      "favicon16": "brand/clinicwork/favicon-16x16.png",
+      "appleTouchIcon": "brand/clinicwork/apple-touch-icon.png",
+      "desktopIconPng": "brand/clinicwork/icon.png",
+      "desktopIconIco": "brand/clinicwork/icon.ico",
+      "desktopIconIcns": "brand/clinicwork/icon.icns"
+    }
+  },
+  "desktop": {
+    "appId": "ai.clinicwork.app",
+    "deepLinkScheme": "clinicwork",
+    "updateFeed": {
+      "owner": "stancsz",
+      "repo": "openwork"
+    }
+  },
+  "providers": {
+    "allowed": [
+      "openrouter"
+    ],
+    "models": [
+      "anthropic/",
+      "openai/",
+      "minimax/",
+      "z-ai/"
+    ],
+    "default": {
+      "providerID": "openrouter",
+      "modelID": "anthropic/claude-sonnet-4.5",
+      "displayName": "Auto",
+      "baseURL": "https://api.badlandslabs.com/v1"
+    },
+    "modelsCatalogUrl": "https://api.badlandslabs.com/",
+    "keyCard": {
+      "label": "Badlands Labs",
+      "keysUrl": null,
+      "validateUrl": "https://api.badlandslabs.com/v1/key",
+      "keyPrefix": null
+    }
+  },
+  "cloud": {
+    "hide": true,
+    "requireSignin": false
+  },
+  "welcome": {
+    "showSignIn": false,
+    "title": "Welcome to ClinicWork",
+    "subtitle": "The private AI workspace for your clinic.",
+    "getStartedHeading": "How it works",
+    "getStartedLabel": "Open your clinic folder →",
+    "showcaseTitle": [
+      "Your clinic's AI —",
+      "patient data stays private."
+    ],
+    "steps": [
+      {
+        "title": "Open your clinic folder",
+        "desc": "Point ClinicWork at your clinic's files — intake forms, letters, spreadsheets."
+      },
+      {
+        "title": "Describe the task",
+        "desc": "Draft a recall message, tidy an intake form, summarize a fax. ClinicWork does the work."
+      },
+      {
+        "title": "Review and approve",
+        "desc": "You approve every action. Patient health information stays on your terms."
+      }
+    ],
+    "features": [
+      {
+        "title": "Patient intake",
+        "desc": "Turn new-patient forms and faxes into clean, structured records."
+      },
+      {
+        "title": "Appointment recall",
+        "desc": "Draft reminders and win-back messages for lapsed patients."
+      },
+      {
+        "title": "Front-desk drafts",
+        "desc": "Write patient emails, letters, and callbacks in your clinic's voice."
+      },
+      {
+        "title": "Documentation help",
+        "desc": "Summarize and tidy clinic paperwork without leaving your machine."
+      },
+      {
+        "title": "Control your browser",
+        "desc": "Look up codes, portals, and references in the built-in browser."
+      },
+      {
+        "title": "Bring your own model",
+        "desc": "Route through your clinic's own key and compliant gateway."
+      }
+    ]
+  },
+  "welcomeByLang": {
+    "zh": {
+      "title": "欢迎使用 ClinicWork",
+      "subtitle": "属于你诊所的私有 AI 工作台。",
+      "getStartedHeading": "使用方法",
+      "getStartedLabel": "打开诊所文件夹 →",
+      "showcaseTitle": [
+        "你诊所的 AI —",
+        "患者数据始终保密。"
+      ],
+      "steps": [
+        {
+          "title": "打开诊所文件夹",
+          "desc": "让 ClinicWork 访问诊所文件——登记表、信函、表格。"
+        },
+        {
+          "title": "描述任务",
+          "desc": "起草复诊提醒、整理登记表、总结传真，ClinicWork 帮你完成。"
+        },
+        {
+          "title": "确认操作",
+          "desc": "每一步都由你批准，患者健康信息始终由你掌控。"
+        }
+      ],
+      "features": [
+        {
+          "title": "患者登记",
+          "desc": "把新患者表格和传真整理成规范结构化记录。"
+        },
+        {
+          "title": "复诊召回",
+          "desc": "为流失患者起草提醒与召回信息。"
+        },
+        {
+          "title": "前台文书",
+          "desc": "用诊所的语气撰写患者邮件、信函与回访。"
+        },
+        {
+          "title": "文档协助",
+          "desc": "在本机总结与整理诊所文书，无需外传。"
+        },
+        {
+          "title": "操控浏览器",
+          "desc": "用内置浏览器查询编码、门户与参考资料。"
+        },
+        {
+          "title": "自带模型",
+          "desc": "通过诊所自己的密钥与合规网关接入。"
+        }
+      ]
+    }
+  }
+}

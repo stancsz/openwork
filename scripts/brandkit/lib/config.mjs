@@ -9,7 +9,12 @@ import { fileURLToPath } from "node:url";
 const HERE = dirname(fileURLToPath(import.meta.url));
 export const REPO_ROOT = resolve(HERE, "..", "..", "..");
 
-const CONFIG_PATH = resolve(REPO_ROOT, "brand.config.json");
+// Which brand to build. BRANDKIT_CONFIG points at an alternate config file
+// (e.g. brand.clinicwork.json) so one checkout can build multiple sibling
+// brands. Defaults to brand.config.json (MiniWork). ALWAYS run `apply.mjs
+// --revert` before switching brands — the brand-name replaceAll anchors on
+// "OpenWork" and can't retarget a previously-applied alias.
+const CONFIG_PATH = resolve(REPO_ROOT, process.env.BRANDKIT_CONFIG ?? "brand.config.json");
 
 const RADIX_COLORS = new Set([
   "gray", "gold", "bronze", "brown", "yellow", "amber", "orange",
@@ -149,6 +154,14 @@ export function loadConfig() {
               raw.providers.default.displayName ?? null,
           }
         : null,
+      // Optional inline key-card override: presents the default provider as a
+      // branded gateway (label, validation URL, key-prefix hint) instead of the
+      // upstream. null = use the built-in per-provider catalog defaults.
+      keyCard: raw.providers?.keyCard ?? null,
+      // Optional override for the opencode model catalog origin (OPENCODE_MODELS_URL).
+      // Point it at a gateway that serves a curated /api.json so the picker no
+      // longer populates from the upstream mirror. null = leave the default.
+      modelsCatalogUrl: raw.providers?.modelsCatalogUrl ?? null,
     },
     cloud: {
       hide: raw.cloud?.hide ?? true,

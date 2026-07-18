@@ -42,10 +42,24 @@
     "allowed": [
       "openrouter"
     ],
-    "models": [],
+    "models": [
+      "anthropic/",
+      "openai/",
+      "minimax/",
+      "z-ai/"
+    ],
     "default": {
       "providerID": "openrouter",
-      "modelID": "anthropic/claude-3.5-sonnet"
+      "modelID": "anthropic/claude-sonnet-4.5",
+      "displayName": "Auto",
+      "baseURL": "https://api.badlandslabs.com/v1"
+    },
+    "modelsCatalogUrl": "https://api.badlandslabs.com/",
+    "keyCard": {
+      "label": "Badlands Labs",
+      "keysUrl": null,
+      "validateUrl": "https://api.badlandslabs.com/v1/key",
+      "keyPrefix": null
     }
   },
   "cloud": {

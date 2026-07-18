@@ -159,7 +159,7 @@
         },
         "models": {
           "type": "array",
-          "description": "Optional model-id whitelist within the allowed providers (e.g. 'anthropic/claude-sonnet-5'). Empty/omitted = all models of allowed providers.",
+          "description": "Optional model whitelist within the allowed providers. An entry ending in '/' is a vendor prefix that matches every model of that vendor (e.g. 'anthropic/', 'openai/', 'minimax/', 'z-ai/'); any other entry matches a model id exactly (e.g. 'anthropic/claude-sonnet-5'). Empty/omitted = all models of allowed providers.",
           "items": { "type": "string" }
         },
         "default": {
@@ -176,6 +176,37 @@
               "type": "object",
               "description": "Language-aware displayName override, keyed by locale id.",
               "additionalProperties": { "type": "string" }
+            },
+            "baseURL": {
+              "type": "string",
+              "description": "Override the provider's API base URL so requests route through a branded gateway instead of the upstream (e.g. \"https://api.badlandslabs.com/v1\"). Applied to both opencode.json and the packaged runtime config."
+            }
+          }
+        },
+        "modelsCatalogUrl": {
+          "type": ["string", "null"],
+          "description": "Override the opencode model-catalog origin (OPENCODE_MODELS_URL). opencode fetches '<url>api.json'. Point it at a gateway that serves a curated catalog so the model picker no longer populates from the upstream mirror (e.g. 'https://api.badlandslabs.com/'). null = leave the app default."
+        },
+        "keyCard": {
+          "type": "object",
+          "additionalProperties": false,
+          "description": "Override the inline API-key card's copy and validation so it presents the branded gateway instead of the underlying provider.",
+          "properties": {
+            "label": {
+              "type": "string",
+              "description": "Provider name shown on the key card (e.g. \"Badlands Labs\")."
+            },
+            "keysUrl": {
+              "type": ["string", "null"],
+              "description": "\"Get a key\" link target, or null to hide it."
+            },
+            "validateUrl": {
+              "type": ["string", "null"],
+              "description": "URL the card GETs with the pasted key to validate it (200 = valid, 401/403 = invalid). Must be CORS-open. null skips inline validation."
+            },
+            "keyPrefix": {
+              "type": ["string", "null"],
+              "description": "Expected key prefix for the reject-hint, or null to omit (avoids leaking the upstream key format)."
             }
           }
         }
