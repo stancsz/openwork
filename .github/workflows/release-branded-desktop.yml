@@ -23,12 +23,23 @@ on:
         description: "Release tag to create/publish (e.g. miniwork-v0.17.20)"
         required: true
         type: string
+  pull_request:
+    paths:
+      - ".github/workflows/release-branded-desktop.yml"
+      - "brand.schema.json"
+      - "brand/**"
+      - "brands/**"
+      - "scripts/brandkit/**"
+      - "apps/**"
+      - "packages/**"
+      - "package.json"
+      - "pnpm-lock.yaml"
   push:
     tags:
       - "miniwork-v*"
 
 permissions:
-  contents: write
+  contents: read
 
 jobs:
   discover:
@@ -150,8 +161,11 @@ jobs:
             apps/desktop/dist-electron/${{ matrix.brand }}-*.blockmap
 
   release:
+    if: github.event_name != 'pull_request'
     needs: build
     runs-on: ubuntu-latest
+    permissions:
+      contents: write
     steps:
       - name: Download installers
         uses: actions/download-artifact@v4
