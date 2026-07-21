@@ -1,34 +1,11 @@
 {
-  "$schema": "./brand.schema.json",
-  "features": {
-    "brandName": true,
-    "accentColor": true,
-    "assets": true,
-    "desktopIdentity": true,
-    "providers": true,
-    "welcomeOverride": true,
-    "cloudHide": true,
-    "language": true,
-    "trim": true
-  },
-  "language": {
-    "default": "en"
-  },
+  "$schema": "../../brand.schema.json",
+  "id": "clinicwork",
   "brand": {
     "name": "ClinicWork",
     "shortName": "Clinic",
     "accentColor": "teal",
-    "assets": {
-      "mark": "brand/clinicwork/mark.svg",
-      "logo": "brand/clinicwork/logo.svg",
-      "logoSquare": "brand/clinicwork/logo-square.svg",
-      "favicon32": "brand/clinicwork/favicon-32x32.png",
-      "favicon16": "brand/clinicwork/favicon-16x16.png",
-      "appleTouchIcon": "brand/clinicwork/apple-touch-icon.png",
-      "desktopIconPng": "brand/clinicwork/icon.png",
-      "desktopIconIco": "brand/clinicwork/icon.ico",
-      "desktopIconIcns": "brand/clinicwork/icon.icns"
-    }
+    "image": "logo.svg"
   },
   "desktop": {
     "appId": "ai.clinicwork.app",
@@ -37,34 +14,6 @@
       "owner": "stancsz",
       "repo": "openwork"
     }
-  },
-  "providers": {
-    "allowed": [
-      "openrouter"
-    ],
-    "models": [
-      "anthropic/",
-      "openai/",
-      "minimax/",
-      "z-ai/"
-    ],
-    "default": {
-      "providerID": "openrouter",
-      "modelID": "anthropic/claude-sonnet-4.5",
-      "displayName": "Auto",
-      "baseURL": "https://api.badlandslabs.com/v1"
-    },
-    "modelsCatalogUrl": "https://api.badlandslabs.com/",
-    "keyCard": {
-      "label": "Badlands Labs",
-      "keysUrl": null,
-      "validateUrl": "https://api.badlandslabs.com/v1/key",
-      "keyPrefix": null
-    }
-  },
-  "cloud": {
-    "hide": true,
-    "requireSignin": false
   },
   "welcome": {
     "showSignIn": false,

@@ -1,20 +1,25 @@
-// Loads and lightly validates brand.config.json.
-// No external deps — this must run on a bare `node` before install.
+// Loads and normalizes one discoverable brand definition.
+//
+// Brand-owned files live under brands/<id>/brand.json. Shared defaults are
+// optional and live in brands/_defaults.json. BRANDKIT_CONFIG remains
+// supported for one-off and backwards-compatible builds; BRANDKIT_BRAND is
+// the normal selector used by local commands and CI.
 
 import { readFileSync, existsSync } from "node:fs";
-import { dirname, resolve } from "node:path";
+import { dirname, relative, resolve, basename } from "node:path";
 import { fileURLToPath } from "node:url";
 
 /** Repo root = three levels up from scripts/brandkit/lib/config.mjs. */
 const HERE = dirname(fileURLToPath(import.meta.url));
 export const REPO_ROOT = resolve(HERE, "..", "..", "..");
 
-// Which brand to build. BRANDKIT_CONFIG points at an alternate config file
-// (e.g. brand.clinicwork.json) so one checkout can build multiple sibling
-// brands. Defaults to brand.config.json (MiniWork). ALWAYS run `apply.mjs
-// --revert` before switching brands — the brand-name replaceAll anchors on
-// "OpenWork" and can't retarget a previously-applied alias.
-const CONFIG_PATH = resolve(REPO_ROOT, process.env.BRANDKIT_CONFIG ?? "brand.config.json");
+const BRAND_ID = (process.env.BRANDKIT_BRAND ?? "miniwork").trim() || "miniwork";
+const CONFIG_OVERRIDE = (process.env.BRANDKIT_CONFIG ?? "").trim();
+export const CONFIG_PATH = resolve(
+  REPO_ROOT,
+  CONFIG_OVERRIDE || `brands/${BRAND_ID}/brand.json`,
+);
+const DEFAULTS_PATH = resolve(REPO_ROOT, "brands/_defaults.json");
 
 const RADIX_COLORS = new Set([
   "gray", "gold", "bronze", "brown", "yellow", "amber", "orange",
@@ -23,7 +28,7 @@ const RADIX_COLORS = new Set([
   "green", "grass", "lime", "mint", "sky",
 ]);
 
-/** Feature groups a distributor can toggle in brand.config.json. All default on. */
+/** Feature groups a distributor can toggle in a brand.json. All default on. */
 export const FEATURE_DEFAULTS = {
   brandName: true,
   accentColor: true,
@@ -36,62 +41,143 @@ export const FEATURE_DEFAULTS = {
   trim: true,
 };
 
-function normalizeFeatures(raw) {
+function isRecord(value) {
+  return value !== null && typeof value === "object" && !Array.isArray(value);
+}
+
+/** Merge objects recursively; arrays and scalar values are brand overrides. */
+function mergeConfig(base, override) {
+  if (!isRecord(base) || !isRecord(override)) return override;
+  const merged = { ...base };
+  for (const [key, value] of Object.entries(override)) {
+    merged[key] = isRecord(value) && isRecord(merged[key])
+      ? mergeConfig(merged[key], value)
+      : value;
+  }
+  return merged;
+}
+
+function readJson(path, label) {
+  try {
+    return JSON.parse(readFileSync(path, "utf8"));
+  } catch (error) {
+    throw new Error(`${label} is not valid JSON: ${error.message}`);
+  }
+}
+
+function repoRelative(path) {
+  return relative(REPO_ROOT, path).replaceAll("\\", "/");
+}
+
+function normalizeFeatures(raw, label) {
   const features = { ...FEATURE_DEFAULTS };
   for (const [key, value] of Object.entries(raw ?? {})) {
     if (!(key in FEATURE_DEFAULTS)) {
       throw new Error(
-        `brand.config.json: unknown feature "${key}" — known features: ${Object.keys(FEATURE_DEFAULTS).join(", ")}.`,
+        `${label}: unknown feature "${key}" — known features: ${Object.keys(FEATURE_DEFAULTS).join(", ")}.`,
       );
     }
     if (typeof value !== "boolean") {
-      throw new Error(`brand.config.json: features.${key} must be a boolean.`);
+      throw new Error(`${label}: features.${key} must be a boolean.`);
     }
     features[key] = value;
   }
   return features;
 }
 
+function derivedAssets(assetDir) {
+  return {
+    mark: `${assetDir}/mark.svg`,
+    logo: `${assetDir}/logo.svg`,
+    logoSquare: `${assetDir}/logo-square.svg`,
+    favicon32: `${assetDir}/favicon-32x32.png`,
+    favicon16: `${assetDir}/favicon-16x16.png`,
+    appleTouchIcon: `${assetDir}/apple-touch-icon.png`,
+    desktopIconPng: `${assetDir}/icon.png`,
+    desktopIconIco: `${assetDir}/icon.ico`,
+    desktopIconIcns: `${assetDir}/icon.icns`,
+  };
+}
+
+function normalizeAssets(brand, configDir, brandId) {
+  if (typeof brand.image === "string" && brand.image.trim()) {
+    const imagePath = resolve(configDir, brand.image);
+    return {
+      sourceImage: repoRelative(imagePath),
+      assets: derivedAssets(`.brandkit/${brandId}`),
+    };
+  }
+
+  // Legacy configs used repo-relative paths for each derived asset. Keep them
+  // readable so a distributor can migrate one brand at a time.
+  return {
+    sourceImage: null,
+    assets: Object.fromEntries(
+      Object.entries(brand.assets ?? {}).map(([key, value]) => [
+        key,
+        typeof value === "string" ? repoRelative(resolve(REPO_ROOT, value)) : value,
+      ]),
+    ),
+  };
+}
+
 /**
- * Read and normalize the brand kit config. Throws with a readable message
- * on the handful of things that would otherwise produce a broken build.
+ * Read, merge, and lightly validate one brand definition. The normalized
+ * shape intentionally stays compatible with the existing operation engine.
  */
 export function loadConfig() {
+  const label = `brand config at ${CONFIG_PATH}`;
   if (!existsSync(CONFIG_PATH)) {
     throw new Error(
-      `brand.config.json not found at ${CONFIG_PATH}. Copy the example and edit it.`,
+      `${label} was not found. Add brands/<id>/brand.json or set BRANDKIT_CONFIG.`,
     );
   }
 
-  let raw;
-  try {
-    raw = JSON.parse(readFileSync(CONFIG_PATH, "utf8"));
-  } catch (error) {
-    throw new Error(`brand.config.json is not valid JSON: ${error.message}`);
+  const configDir = dirname(CONFIG_PATH);
+  const source = readJson(CONFIG_PATH, label);
+  let raw = {};
+
+  if (existsSync(DEFAULTS_PATH)) {
+    raw = mergeConfig(raw, readJson(DEFAULTS_PATH, "brands/_defaults.json"));
   }
 
+  if (typeof source.extends === "string" && source.extends.trim()) {
+    const parentPath = resolve(configDir, source.extends);
+    raw = mergeConfig(raw, readJson(parentPath, `extended brand config at ${parentPath}`));
+  }
+
+  raw = mergeConfig(raw, source);
+
   const brand = raw.brand ?? {};
+  const brandId = raw.id ?? (CONFIG_OVERRIDE ? basename(configDir) : BRAND_ID);
+  if (!/^[a-z][a-z0-9-]*$/.test(brandId)) {
+    throw new Error(`${label}: id "${brandId}" must be lowercase kebab-case.`);
+  }
   if (!brand.name || typeof brand.name !== "string") {
-    throw new Error("brand.config.json: brand.name is required.");
+    throw new Error(`${label}: brand.name is required.`);
   }
   if (!RADIX_COLORS.has(brand.accentColor)) {
     throw new Error(
-      `brand.config.json: brand.accentColor "${brand.accentColor}" is not a Radix color family.`,
+      `${label}: brand.accentColor "${brand.accentColor}" is not a Radix color family.`,
+    );
+  }
+
+  const normalizedAssets = normalizeAssets(brand, configDir, brandId);
+  if (normalizedAssets.sourceImage && !existsSync(resolve(REPO_ROOT, normalizedAssets.sourceImage))) {
+    throw new Error(
+      `${label}: brand.image does not exist at ${normalizedAssets.sourceImage}.`,
     );
   }
 
   const scheme = raw.desktop?.deepLinkScheme ?? "openwork";
   if (!/^[a-z][a-z0-9-]*$/.test(scheme)) {
     throw new Error(
-      `brand.config.json: desktop.deepLinkScheme "${scheme}" must be lowercase, no ':' or '//'.`,
+      `${label}: desktop.deepLinkScheme "${scheme}" must be lowercase, no ':' or '//'.`,
     );
   }
 
-  // Language: from brand.config.json `language.default`, overridable at build
-  // time with BRANDKIT_LANG. Any non-"en" value builds a hard-locked
-  // single-language variant (default locale forced, switcher hidden); unset or
-  // "en" builds the normal multi-language app. This is what lets one checkout
-  // emit both an English and a Chinese build.
+  // A non-English value forces a hard-locked single-language build. CI can
+  // override it for a matrix entry with BRANDKIT_LANG.
   const envLang = (process.env.BRANDKIT_LANG ?? "").trim();
   const language = {
     default: envLang !== "" ? envLang : (raw.language?.default ?? "en"),
@@ -101,42 +187,33 @@ export function loadConfig() {
     !existsSync(resolve(REPO_ROOT, `apps/app/src/i18n/locales/${language.default}.ts`))
   ) {
     throw new Error(
-      `language "${language.default}" (from ${envLang ? "BRANDKIT_LANG" : "brand.config.json language.default"}) has no locale file in apps/app/src/i18n/locales/.`,
+      `language "${language.default}" (from ${envLang ? "BRANDKIT_LANG" : `${label} language.default`}) has no locale file in apps/app/src/i18n/locales/.`,
     );
   }
 
-  // Per-language welcome override: welcomeByLang.<lang> layers over the base
-  // `welcome` block so a locked-language build shows localized hero copy.
   const welcomeRaw = {
     ...(raw.welcome ?? {}),
     ...(raw.welcomeByLang?.[language.default] ?? {}),
   };
 
   return {
-    features: normalizeFeatures(raw.features),
+    id: brandId,
+    configPath: CONFIG_PATH,
+    features: normalizeFeatures(raw.features, label),
     language,
     brand: {
-      // `name` is the ASCII base — drives appId/scheme/artifact/install-dir and
-      // the packaged productName (so exe/app filenames stay ASCII-safe).
+      id: brandId,
       name: brand.name,
       shortName: brand.shortName ?? brand.name,
-      // `displayName` is the language-aware brand shown in the UI + window title
-      // (brand.nameByLang.<lang> overrides `name`, e.g. zh → "Mini助手").
       displayName: brand.nameByLang?.[language.default] ?? brand.name,
       accentColor: brand.accentColor,
-      assets: brand.assets ?? {},
+      image: normalizedAssets.sourceImage,
+      assets: normalizedAssets.assets,
     },
     desktop: {
       appId: raw.desktop?.appId ?? "com.differentai.openwork",
       deepLinkScheme: scheme,
-      // Packaged app / exe / .app filename (electron-builder productName). Kept
-      // separate from `brand.name` so the bundle can be short (e.g. "Mini")
-      // while the UI shows the full display name. Must be filesystem-safe.
       productName: raw.desktop?.productName ?? null,
-      // Optional { owner, repo } GitHub feed for electron-updater. When set,
-      // the packaged app checks THIS repo's releases instead of upstream
-      // different-ai/openwork — without it a branded build can auto-update
-      // itself back into stock OpenWork.
       updateFeed:
         raw.desktop?.updateFeed?.owner && raw.desktop?.updateFeed?.repo
           ? { owner: raw.desktop.updateFeed.owner, repo: raw.desktop.updateFeed.repo }
@@ -144,7 +221,6 @@ export function loadConfig() {
     },
     providers: {
       allowed: raw.providers?.allowed ?? [],
-      // Optional model-id whitelist within the allowed providers. Empty = all.
       models: raw.providers?.models ?? [],
       default: raw.providers?.default
         ? {
@@ -154,13 +230,7 @@ export function loadConfig() {
               raw.providers.default.displayName ?? null,
           }
         : null,
-      // Optional inline key-card override: presents the default provider as a
-      // branded gateway (label, validation URL, key-prefix hint) instead of the
-      // upstream. null = use the built-in per-provider catalog defaults.
       keyCard: raw.providers?.keyCard ?? null,
-      // Optional override for the opencode model catalog origin (OPENCODE_MODELS_URL).
-      // Point it at a gateway that serves a curated /api.json so the picker no
-      // longer populates from the upstream mirror. null = leave the default.
       modelsCatalogUrl: raw.providers?.modelsCatalogUrl ?? null,
     },
     cloud: {
@@ -169,7 +239,6 @@ export function loadConfig() {
     },
     welcome: {
       showSignIn: welcomeRaw.showSignIn ?? false,
-      // null → the override falls back to the app's i18n string for that slot.
       title: welcomeRaw.title ?? null,
       subtitle: welcomeRaw.subtitle ?? null,
       getStartedHeading: welcomeRaw.getStartedHeading ?? "Get started",

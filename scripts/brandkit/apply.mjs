@@ -2,7 +2,7 @@
 // Brand kit apply engine.
 //
 //   node scripts/brandkit/apply.mjs           apply branding to the working tree
-//   node scripts/brandkit/apply.mjs --check    report what WOULD change (no writes)
+//   node scripts/brandkit/apply.mjs --check    report what WOULD change (no tracked writes)
 //   node scripts/brandkit/apply.mjs --revert    undo (git checkout tracked files + rm generated)
 //
 // Run this AFTER `git pull` and BEFORE building. It is idempotent: safe to run
@@ -14,6 +14,7 @@ import { appendFileSync, readFileSync, rmSync, existsSync } from "node:fs";
 import { resolve } from "node:path";
 
 import { loadConfig, REPO_ROOT } from "./lib/config.mjs";
+import { prepareBrandAssets } from "./lib/assets.mjs";
 import { buildOperations, enabledFeatures } from "./operations.mjs";
 import { runOperation, trackedTargets } from "./lib/ops.mjs";
 
@@ -31,15 +32,18 @@ const GLYPH = {
   error: "✗ ERROR   ",
 };
 
-function main() {
+async function main() {
   const config = loadConfig();
   const operations = buildOperations(config);
 
   // --revert always covers every op, toggles included, so it cleans a tree
   // that was applied under a different features config.
-  if (REVERT) return revert(operations);
+  if (REVERT) return revert(operations, config);
 
   const features = enabledFeatures(config);
+  const assetReport = features.assets && config.brand.image
+    ? await prepareBrandAssets(config)
+    : null;
   const enabledOps = operations.filter((op) => features[op.feature] !== false);
   const disabledOps = operations.filter((op) => features[op.feature] === false);
 
@@ -60,7 +64,7 @@ function main() {
   );
   const off = Object.entries(features).filter(([, on]) => !on).map(([name]) => name);
   if (off.length) console.log(`Features off: ${off.join(", ")}`);
-  console.log(CHECK ? "Mode: CHECK (no files written)\n" : "Mode: APPLY\n");
+  console.log(CHECK ? "Mode: CHECK (no tracked files written)\n" : "Mode: APPLY\n");
 
   // Disabled groups are cleaned up BEFORE enabled ops run: a shared target
   // (e.g. electron/main.mjs, touched by both brandName and desktopIdentity)
@@ -73,6 +77,13 @@ function main() {
   }));
 
   const results = [
+    ...(assetReport
+      ? [{
+          status: assetReport.changed > 0 ? "applied" : "already",
+          id: "asset:derived",
+          detail: `${assetReport.changed} derived file(s) ${CHECK ? "would be refreshed" : "refreshed"}`,
+        }]
+      : []),
     ...offResults,
     ...enabledOps.map((op) => runOperation(op, { apply: !CHECK })),
   ];
@@ -160,7 +171,7 @@ function cleanupDisabled(operations) {
   }
 }
 
-function revert(operations) {
+function revert(operations, config) {
   const tracked = trackedTargets(operations).filter((p) => existsSync(resolve(REPO_ROOT, p)));
   if (tracked.length) {
     console.log(`Reverting ${tracked.length} tracked file(s) via git checkout…`);
@@ -175,7 +186,15 @@ function revert(operations) {
       console.log(`Removed generated ${file}`);
     }
   }
+  const derivedAssets = resolve(REPO_ROOT, ".brandkit", config.id);
+  if (existsSync(derivedAssets)) {
+    rmSync(derivedAssets, { recursive: true, force: true });
+    console.log(`Removed generated ${derivedAssets}`);
+  }
   console.log("Revert complete.");
 }
 
-main();
+main().catch((error) => {
+  console.error(`\nBrand kit failed: ${error.message}`);
+  process.exitCode = 1;
+});
