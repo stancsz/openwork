@@ -375,7 +375,10 @@ export function buildOperations(config) {
       feature: "cloudHide",
       type: "replaceString",
       target: "apps/app/src/react-app/domains/settings/shell/settings-page.tsx",
-      find: "  return memoryEnabled ? [...CLOUD_SETTINGS_TABS, \"memory\"] : CLOUD_SETTINGS_TABS;",
+      find: [
+        "  return memoryEnabled ? [...CLOUD_SETTINGS_TABS, \"memory\"] : CLOUD_SETTINGS_TABS;",
+        "  return memoryEnabled ? [\"cloud-account\", \"memory\", \"connect\"] : CLOUD_SETTINGS_TABS;",
+      ],
       replace: "  return []; /* brandkit:hide-cloud */",
     },
     // Kill the header "Sign in" button, the status-bar sign-in, and the
@@ -523,25 +526,21 @@ export function buildOperations(config) {
       replace: "{null /* brandkit:hide-help */}",
       signature: "brandkit:hide-help",
     },
-    // Extensions "Marketplace": the pane + toggle are gated by connect-delivery
-    // (`useConnectEnabled` / `shouldShowExtensionsMarketplacePane`). Force both
-    // gates false so the toggle never renders and `activeView` stays "my"; then
-    // null out the "connect to a marketplace" hint that otherwise shows in the
-    // else branch. Leaves only the user's own extensions.
-    {
-      id: "settings:extensions-connect-enabled",
-      feature: "trim",
-      type: "replaceString",
-      target: "apps/app/src/react-app/domains/settings/pages/extensions-view.tsx",
-      find: "  const connectEnabled = useConnectEnabled();",
-      replace: "  const connectEnabled = false; /* brandkit:hide-marketplace */",
-    },
+    // Extensions "Marketplace": force the pane gate false so the toggle never
+    // renders and `activeView` stays "my"; the separate connect hint is nulled
+    // below. The candidate anchors cover the current upstream shape and the
+    // immediately preceding shape so a PR merge can still be built cleanly.
     {
       id: "settings:extensions-marketplace-pane",
       feature: "trim",
       type: "replaceString",
       target: "apps/app/src/react-app/domains/settings/pages/extensions-view.tsx",
-      find: "  const showMarketplacePane = shouldShowExtensionsMarketplacePane(connectEnabled);",
+      find: [
+        "  const connectEnabled = useConnectEnabled();\n  const showMarketplacePane = shouldShowExtensionsMarketplacePane(connectEnabled);",
+        "  const connectEnabled = useConnectEnabled();\r\n  const showMarketplacePane = shouldShowExtensionsMarketplacePane(connectEnabled);",
+        "  const showMarketplacePane = shouldShowExtensionsMarketplacePane();",
+        "  const showMarketplacePane = shouldShowExtensionsMarketplacePane();\r\n",
+      ],
       replace: "  const showMarketplacePane = false; /* brandkit:hide-marketplace */",
     },
     {
