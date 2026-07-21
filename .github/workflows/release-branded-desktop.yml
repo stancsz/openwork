@@ -116,6 +116,9 @@ jobs:
       # have an Apple account.
       - name: Package + ad-hoc sign macOS app
         if: matrix.platform == 'mac'
+        env:
+          BRANDKIT_LANG: ${{ matrix.lang }}
+          BRANDKIT_BRAND: ${{ matrix.brand }}
         run: |
           set -euo pipefail
           cd apps/desktop
