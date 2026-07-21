@@ -7,6 +7,7 @@ function seedRequiredEnv() {
   process.env.BETTER_AUTH_SECRET = process.env.BETTER_AUTH_SECRET ?? "y".repeat(32)
   process.env.BETTER_AUTH_URL = process.env.BETTER_AUTH_URL ?? "http://127.0.0.1:8790"
   process.env.CORS_ORIGINS = process.env.CORS_ORIGINS ?? "http://127.0.0.1:8790"
+  process.env.DEN_ALLOW_PRIVATE_MCP_URLS = process.env.DEN_ALLOW_PRIVATE_MCP_URLS ?? "1"
 }
 
 seedRequiredEnv()
@@ -110,6 +111,38 @@ test("generic connector recovery routes members and organization admins without 
   })
 })
 
+test("reauth-required overrides generic provider ownership from a refresh diagnostic", () => {
+  const status = externalCapabilities.buildExternalConnectionStatus({
+    connection: { id: "connection-refresh", name: "Research Vault", authType: "oauth", credentialMode: "per_member" },
+    state: "reauth_required",
+    errorCode: "unauthorized",
+    message: "The authorization server rejected the token refresh exchange.",
+    diagnostic: {
+      referenceId: "req_refresh",
+      phase: "CONTINUITY_REFRESH",
+      category: "http_failure",
+      code: "MCP_HTTP_400",
+      highestPassed: "reachable",
+      retryable: false,
+      actionOwner: "provider_admin",
+      operatorAction: "Inspect provider and proxy logs.",
+      message: "The authorization server rejected the token refresh exchange.",
+      httpStatus: 400,
+    },
+  })
+
+  expect(status).toMatchObject({
+    state: "reauth_required",
+    actor: "member",
+    action: {
+      type: "reconnect",
+      label: "Reconnect Research Vault",
+      surface: "openwork_your_connections",
+    },
+  })
+  expect("diagnostic" in status).toBe(false)
+})
+
 test("provider installation failures route to the provider admin console", () => {
   const status = externalCapabilities.buildExternalConnectionStatus({
     connection: { id: "connection-4", name: "Documents", authType: "oauth", credentialMode: "shared" },
@@ -148,6 +181,7 @@ test("structured diagnostics remain the single source of truth for fix ownership
       surface: "network_infrastructure",
     },
   })
+  expect("diagnostic" in status).toBe(false)
 })
 
 test("generic provider failures route to connector inspection instead of cloud reauthorization", () => {

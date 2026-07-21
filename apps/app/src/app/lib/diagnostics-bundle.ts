@@ -9,6 +9,7 @@ import {
   type OpenworkServerInfo,
 } from "./desktop";
 import { readPerfLogs, type PerfLogRecord } from "./perf-log";
+import { sanitizeCloudMcpHealthDiagnostic } from "./diagnostic-sanitizer";
 import {
   readOpenworkServerSettings,
   type OpenworkServerSettings,
@@ -27,6 +28,7 @@ export type DiagnosticsBundleContext = {
   openworkServerStatus?: OpenworkServerStatus;
   openworkServerUrl?: string;
   runtimeWorkspaceId?: string | null;
+  cloudMcpHealth?: unknown;
 };
 
 export type DiagnosticsBundleInputs = {
@@ -39,6 +41,7 @@ export type DiagnosticsBundleInputs = {
   developerLogs: DevLogRecord[];
   perfLogs: PerfLogRecord[];
   context?: DiagnosticsBundleContext;
+  cloudMcpHealth?: unknown;
 };
 
 type DiagnosticsExecution = {
@@ -81,6 +84,7 @@ function pickEngineInfo(info: EngineInfo | null) {
   return {
     running: info.running,
     runtime: info.runtime,
+    managedByServer: info.managedByServer,
     baseUrl: info.baseUrl,
     projectDir: info.projectDir,
     hostname: info.hostname,
@@ -166,6 +170,7 @@ export function composeDiagnosticsBundleJson(input: DiagnosticsBundleInputs): st
       },
       host: pickHostInfo(input.hostInfo),
     },
+    cloudMcp: sanitizeCloudMcpHealthDiagnostic(input.cloudMcpHealth ?? context?.cloudMcpHealth ?? null),
     reload: {
       canReloadWorkspace: context?.canReloadWorkspace === true,
     },

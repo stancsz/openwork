@@ -1,6 +1,7 @@
 import { getInitialActiveOrganizationIdForUser } from "./active-organization.js";
 import { db } from "./db.js";
 import { env } from "./env.js";
+import { appLogger } from "./observability/logger.js";
 import { deriveDenMcpAgentResource, deriveDenMcpResource, mcpEndpointResource } from "./mcp/resource.js";
 import { getDenAuthIssuer, getDenJwtOptions } from "./mcp/jwt-policy.js";
 import {
@@ -20,7 +21,6 @@ import { DEN_ACCOUNT_CONFIG } from "./account-linking-policy.js";
 import { SCIM_TOKEN_STORAGE_STRATEGY } from "./scim-token-storage.js";
 import { syncDenSignupContact } from "./loops.js";
 import { sendEmail } from "./utils/email/send-email.js";
-import { resolveInvitationDownloadUrl } from "./install-links.js";
 import {
   DEN_API_KEY_DEFAULT_PREFIX,
   DEN_API_KEY_EXPIRES_IN_DAYS,
@@ -39,6 +39,7 @@ import {
   getOrganizationSsoJitRole,
   ORGANIZATION_SSO_JIT_ROLE,
 } from "./sso-jit.js";
+import { isScimDeprovisionedIdentity } from "./scim-deprovisioning.js";
 import {
   ORGANIZATION_SAML_ALLOW_IDP_INITIATED,
   ORGANIZATION_SAML_DEPRECATED_ALGORITHM_BEHAVIOR,
@@ -55,6 +56,7 @@ import {
   findEnterpriseAuthRequirementForEmail,
   findEnterpriseAuthRequirementForUserId,
 } from "./enterprise-auth-requirement.js";
+import { getAuthBodyEmail, getSingleOrgEmailSignupPolicyViolation } from "./single-org-signup-policy.js";
 import { createDenTypeId, normalizeDenTypeId } from "@openwork-ee/utils/typeid";
 import * as schema from "@openwork-ee/den-db/schema";
 import { apiKey } from "@better-auth/api-key";
@@ -67,6 +69,8 @@ import { drizzleAdapter } from "better-auth/adapters/drizzle";
 import { deleteSessionCookie } from "better-auth/cookies";
 import { and, eq, sql } from "@openwork-ee/den-db/drizzle";
 import { emailOTP, jwt, organization } from "better-auth/plugins";
+
+const logger = appLogger.child({ component: "auth" });
 
 function localMcpResourceAliases(resource: string) {
   if (!env.devMode) {
@@ -256,15 +260,6 @@ function throwMemberLifecycleError(message: string): never {
   throw new APIError("BAD_REQUEST", { message });
 }
 
-function getBodyEmail(body: unknown) {
-  if (!body || typeof body !== "object") {
-    return null;
-  }
-
-  const value = Object.getOwnPropertyDescriptor(body, "email")?.value;
-  return typeof value === "string" && value.trim() ? value.trim() : null;
-}
-
 function removedMemberIdentity(value: unknown): { id: string; organizationId: string } | null {
   if (!value || typeof value !== "object") {
     return null;
@@ -346,7 +341,7 @@ export const auth = betterAuth({
             // chokepoint can merge any matching pending invitation without blocking sign-in.
             await reconcilePendingInvitationsForUser(userId);
           } catch (error) {
-            console.error("[auth][invitation_reconcile_failed]", { userId, error });
+            logger.error("invitation reconcile failed", { user_id: userId, error });
           }
 
           return {
@@ -390,7 +385,14 @@ export const auth = betterAuth({
         return;
       }
 
-      const email = getBodyEmail(ctx.body);
+      const email = getAuthBodyEmail(ctx.body);
+      if (ctx.path === "/sign-up/email") {
+        const violation = await getSingleOrgEmailSignupPolicyViolation(email);
+        if (violation) {
+          throw new APIError("FORBIDDEN", { message: violation.message });
+        }
+      }
+
       if (!email) {
         return;
       }
@@ -534,7 +536,7 @@ export const auth = betterAuth({
   },
   emailAndPassword: {
     enabled: true,
-    autoSignIn: false,
+    autoSignIn: true,
     requireEmailVerification: env.requireEmailVerification,
     revokeSessionsOnPasswordReset: true,
     async sendResetPassword({ user, url }) {
@@ -575,12 +577,6 @@ export const auth = betterAuth({
         },
       },
       async sendInvitationEmail(data) {
-        const downloadUrl = await resolveInvitationDownloadUrl({
-          organizationId: data.organization.id,
-          createdByUserId: data.inviter.user.id,
-          metadata: data.organization.metadata,
-        });
-
         await sendEmail({
           to: data.email,
           template: "organizationInvite",
@@ -590,7 +586,6 @@ export const auth = betterAuth({
             invitedByEmail: data.inviter.user.email,
             organizationName: data.organization.name,
             role: data.role,
-            downloadUrl,
           },
         });
       },
@@ -766,9 +761,16 @@ export const auth = betterAuth({
         const remoteId = pickRemoteIdentity(userInfo);
         const displayName = maybeString(userInfo.name) ?? maybeString(userInfo.displayName) ?? maybeString(user.name);
         const email = maybeString(userInfo.email) ?? maybeString(user.email);
+        const organizationId = normalizeDenTypeId("organization", provider.organizationId);
+        const userId = normalizeDenTypeId("user", user.id);
+        if (await isScimDeprovisionedIdentity({ organizationId, userId, email })) {
+          throw new APIError("FORBIDDEN", {
+            message: "This user was deprovisioned by SCIM. Reactivate them in the identity provider before signing in.",
+          });
+        }
         const payload = {
-          organizationId: normalizeDenTypeId("organization", provider.organizationId),
-          userId: normalizeDenTypeId("user", user.id),
+          organizationId,
+          userId,
           source: "sso",
           ssoProviderId: provider.providerId,
           remoteId,

@@ -169,7 +169,7 @@ test("builds a per-user Start Menu shortcut with the branded Windows identity", 
   }), {
     target: "C:\\Program Files\\OpenWork\\OpenWork.exe",
     cwd: "C:\\Program Files\\OpenWork",
-    description: "OpenWork desktop",
+    description: "OpenWork organization desktop",
     icon: "C:\\Users\\Admin\\brand-icon.ico",
     iconIndex: 0,
     appUserModelId: "com.differentai.openwork.brand.1234",
@@ -181,7 +181,7 @@ test("anchors a packaged shortcut target to the active Windows user profile", ()
     packaged: true,
     execPath: "C:\\Windows\\System32\\config\\systemprofile\\AppData\\Local\\Programs\\@openworkdesktop\\OpenWork.exe",
     resourcesPath: "C:\\Windows\\System32\\config\\systemprofile\\AppData\\Local\\Programs\\@openworkdesktop\\resources",
-    shortcutPath: "C:\\Users\\Administrator\\AppData\\Roaming\\Microsoft\\Windows\\Start Menu\\Programs\\Blue Yonder.lnk",
+    shortcutPath: "C:\\Users\\Administrator\\AppData\\Roaming\\Microsoft\\Windows\\Start Menu\\Programs\\Northwind.lnk",
   }), "C:\\Users\\Administrator\\AppData\\Local\\Programs\\@openworkdesktop\\OpenWork.exe");
 });
 

@@ -11,6 +11,7 @@ function seedRequiredEnv() {
   process.env.BETTER_AUTH_SECRET = process.env.BETTER_AUTH_SECRET ?? "y".repeat(32)
   process.env.BETTER_AUTH_URL = process.env.BETTER_AUTH_URL ?? "http://127.0.0.1:8790"
   process.env.CORS_ORIGINS = process.env.CORS_ORIGINS ?? "http://127.0.0.1:8790"
+  process.env.DEN_ALLOW_PRIVATE_MCP_URLS = process.env.DEN_ALLOW_PRIVATE_MCP_URLS ?? "1"
 }
 
 class MemoryTransport implements Transport {
@@ -50,6 +51,8 @@ beforeAll(async () => {
 })
 
 test("executeCapabilityWithBudget returns a structured timeout result", async () => {
+  expect(agentModule.EXECUTE_CAPABILITY_TIMEOUT_MS).toBeGreaterThan(150_000)
+
   const result = await agentModule.executeCapabilityWithBudget({
     capability: "gmail_search",
     timeoutMs: 1,
@@ -60,7 +63,7 @@ test("executeCapabilityWithBudget returns a structured timeout result", async ()
   expect(result.content[0]?.text).toBe(JSON.stringify({
     error: "capability_timeout",
     capability: "gmail_search",
-    message: "The capability call exceeded 45s. Retry once; if it times out again, narrow the request (fewer results, tighter query) and tell the user the service is slow — do NOT tell them to reconfigure or reconnect.",
+    message: "The capability call exceeded 180s. Retry once; if it times out again, narrow the request (fewer results, tighter query) and tell the user the service is slow — do NOT tell them to reconfigure or reconnect.",
   }))
 })
 
@@ -84,7 +87,7 @@ test("executeCapabilityWithBudget swallows late rejections after timeout", async
     expect(result.content[0]?.text).toBe(JSON.stringify({
       error: "capability_timeout",
       capability: "slow_google_workspace",
-      message: "The capability call exceeded 45s. Retry once; if it times out again, narrow the request (fewer results, tighter query) and tell the user the service is slow — do NOT tell them to reconfigure or reconnect.",
+      message: "The capability call exceeded 180s. Retry once; if it times out again, narrow the request (fewer results, tighter query) and tell the user the service is slow — do NOT tell them to reconfigure or reconnect.",
     }))
 
     await new Promise((resolve) => setTimeout(resolve, 25))
@@ -104,10 +107,19 @@ test("agent MCP server exposes steering instructions during initialize", async (
 
   expect(client.getInstructions()).toBe(agentModule.AGENT_MCP_INSTRUCTIONS)
   expect(client.getInstructions()).toContain("search_capabilities and execute_capability")
+  expect(client.getInstructions()).toContain("add a public GitHub plugin to an organization marketplace")
+  expect(client.getInstructions()).toContain("Preview first")
+  expect(client.getInstructions()).toContain("Do not choose one authentication type for every server")
+  expect(client.getInstructions()).toContain("An import or plugin binding is not proof")
+  expect(client.getInstructions()).toContain("cloudReadiness")
   expect(client.getInstructions()).toContain("Gmail read/search")
   expect(client.getInstructions()).toContain("Settings > Connect")
   expect(client.getInstructions()).toContain("Never tell the user to reconnect OpenWork Cloud")
   expect(client.getInstructions()).toContain("connectionStatus.connectionName")
+  expect(client.getInstructions()).toContain("schemaGuidance is advisory")
+  expect(client.getInstructions()).toContain("always attempts the downstream provider call")
+  expect(client.getInstructions()).toContain("invalid_capability_arguments")
+  expect(client.getInstructions()).toContain("never retry the same arguments unchanged")
 
   await client.close()
   await server.close()
@@ -141,34 +153,124 @@ test("capability search preserves the bounded-fanout coverage warning", () => {
   expect(JSON.parse(result.content[0]?.text ?? "{}")).toEqual(structured)
 })
 
-test("external capability failures preserve the safe MCP diagnostic envelope", () => {
+test("external capability failures preserve the slim agent-facing MCP error envelope", () => {
   const result = agentModule.externalCapabilityErrorToolResult({
     ok: false,
     error: "connection_failed",
     message: "Connection failed. Diagnostic reference: req_test.",
-    actionOwner: "network_admin",
-    operatorAction: "Repair the certificate chain.",
-    diagnostic: {
-      referenceId: "req_test",
-      phase: "NETWORK_TLS",
-      category: "tls_failure",
-      code: "MCP_CERT_HAS_EXPIRED",
-      highestPassed: "reachable",
-      retryable: false,
-      actionOwner: "network_admin",
-      operatorAction: "Repair the certificate chain.",
-      message: "TLS validation failed.",
+    referenceId: "req_test",
+    retryable: false,
+    providerError: {
+      jsonRpcCode: -32050,
+      message: "Provider quota exceeded.",
+      data: '{"reason":"quota"}',
+    },
+    connectionStatus: {
+      version: 1,
+      kind: "connection_action",
+      source: "openwork-cloud",
+      layer: "mcp_connection",
+      connectionId: "emc_test",
+      connectionName: "Knowledge Hub",
+      authType: "oauth",
+      credentialMode: "per_member",
+      state: "reauth_required",
+      errorCode: "invalid_grant",
+      message: "Authorization expired.",
+      actor: "member",
+      action: {
+        type: "reconnect",
+        label: "Reconnect Knowledge Hub",
+        surface: "openwork_your_connections",
+        retry: "search_capabilities",
+      },
     },
   })
   expect(result.isError).toBe(true)
-  expect(JSON.parse(result.content[0]?.text ?? "{}")).toMatchObject({
+  const payload = JSON.parse(result.content[0]?.text ?? "{}")
+  expect(payload).toMatchObject({
     error: "connection_failed",
-    actionOwner: "network_admin",
-    operatorAction: "Repair the certificate chain.",
-    diagnostic: {
-      referenceId: "req_test",
-      phase: "NETWORK_TLS",
-      actionOwner: "network_admin",
+    referenceId: "req_test",
+    retryable: false,
+    providerError: {
+      jsonRpcCode: -32050,
+      message: "Provider quota exceeded.",
+      data: '{"reason":"quota"}',
+    },
+    connectionStatus: {
+      connectionId: "emc_test",
+      state: "reauth_required",
+      action: { type: "reconnect" },
+    },
+  })
+  expect("diagnostic" in payload).toBe(false)
+  expect("actionOwner" in payload).toBe(false)
+  expect("operatorAction" in payload).toBe(false)
+  expect("diagnostic" in payload.connectionStatus).toBe(false)
+})
+
+test("invalid capability arguments preserve corrective retry instructions", () => {
+  const result = agentModule.externalCapabilityErrorToolResult({
+    ok: false,
+    error: "invalid_capability_arguments",
+    capability: "mcp:emc_test:lookup_incident",
+    message: "The capability arguments do not match its advertised schema.",
+    issues: [{
+      path: "/query",
+      keyword: "schema_validation",
+      message: "Required property query is missing.",
+    }],
+    schemaDigest: `sha256:${"a".repeat(64)}`,
+    sameArgumentsRetryable: false,
+    retry: { action: "correct_arguments", searchRequired: false },
+  })
+
+  expect(result.isError).toBe(true)
+  expect(JSON.parse(result.content[0]?.text ?? "{}")).toEqual({
+    error: "invalid_capability_arguments",
+    message: "The capability arguments do not match its advertised schema.",
+    capability: "mcp:emc_test:lookup_incident",
+    issues: [{
+      path: "/query",
+      keyword: "schema_validation",
+      message: "Required property query is missing.",
+    }],
+    schemaDigest: `sha256:${"a".repeat(64)}`,
+    sameArgumentsRetryable: false,
+    retry: { action: "correct_arguments", searchRequired: false },
+  })
+})
+
+test("successful provider output preserves advisory schema guidance as additional content", () => {
+  const result = agentModule.externalCapabilitySuccessToolResult({
+    ok: true,
+    result: {
+      content: [{ type: "text", text: "Provider accepted the request." }],
+    },
+    schemaGuidance: {
+      advisory: true,
+      providerCallAttempted: true,
+      message: "OpenWork forwarded the call to the provider. Use the provider result as the source of truth.",
+      warnings: [{
+        code: "arguments_schema_mismatch",
+        message: "The arguments did not match the advertised schema.",
+        issues: [{
+          path: "/",
+          keyword: "schema_validation",
+          message: "Unexpected providerExtension property.",
+        }],
+        suggestedAction: "Do not retry because the provider succeeded.",
+      }],
+    },
+  })
+
+  expect(result.isError).toBeUndefined()
+  expect(result.content[0]).toEqual({ type: "text", text: "Provider accepted the request." })
+  expect(JSON.parse(result.content[1]?.text ?? "{}")).toMatchObject({
+    schemaGuidance: {
+      advisory: true,
+      providerCallAttempted: true,
+      warnings: [{ code: "arguments_schema_mismatch" }],
     },
   })
 })

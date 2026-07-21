@@ -1,6 +1,11 @@
 import { and, eq, isNull } from "@openwork-ee/den-db/drizzle"
 import { UnauthorizedError } from "@modelcontextprotocol/sdk/client/auth.js"
 import { StreamableHTTPError } from "@modelcontextprotocol/sdk/client/streamableHttp.js"
+import {
+  OPENWORK_CLOUD_MCP_CONNECTION_ACTION_KIND,
+  OPENWORK_CLOUD_MCP_CONNECTION_ACTION_SOURCE,
+  OPENWORK_CLOUD_MCP_CONNECTION_ACTION_VERSION,
+} from "@openwork/types/den/mcp-connection-action"
 import { MemberTable } from "@openwork-ee/den-db/schema"
 import { normalizeDenTypeId, type DenTypeId } from "@openwork-ee/utils/typeid"
 import {
@@ -23,6 +28,12 @@ import {
 import { getConnectedAccount } from "../capability-sources/oauth-credentials.js"
 import { db } from "../db.js"
 import { listTeamsForMember } from "../orgs.js"
+import { openworkOrganizationConnectionsUrl, openworkYourConnectionsUrl } from "./connection-navigation.js"
+import {
+  externalMcpToolSchemaDigest,
+  validateExternalMcpToolArguments,
+  type ExternalMcpArgumentIssue,
+} from "./external-mcp-tool-arguments.js"
 import { compareCapabilityMatches, tokenize } from "./search.js"
 import type { CapabilityMatch } from "./search.js"
 
@@ -96,6 +107,7 @@ export async function resolveMcpMemberIdentity(input: {
 }
 
 function hasSharedCredential(connection: ExternalMcpConnectionRow): boolean {
+  if (connection.oauthIssuerReviewRequiredAt) return false
   if (connection.authType === "oauth") return Boolean(connection.accessToken)
   if (connection.authType === "apikey") return Boolean(connection.apiKey)
   return true
@@ -143,6 +155,12 @@ export function selectExternalMcpSearchConnections<T extends { name: string }>(
 }
 
 export type ExternalCapabilityMatch = CapabilityMatch & {
+  /** Exact MCP arguments schema returned by the provider's live tools/list. */
+  argumentsSchema?: unknown
+  /** Stable digest used to detect a schema change between search and execute. */
+  schemaDigest?: string
+  /** Tells the generic execute facade where MCP arguments must be supplied. */
+  invocation?: { argumentsField: "body" }
   /** Distinguishes a connection-health result from a callable capability. */
   kind?: "connection_status"
   /** Set for connection-level status rows: the tool exists but needs a human/admin fix before real tools can be listed. */
@@ -152,6 +170,9 @@ export type ExternalCapabilityMatch = CapabilityMatch & {
 }
 
 export type ExternalConnectionStatus = {
+  version: typeof OPENWORK_CLOUD_MCP_CONNECTION_ACTION_VERSION
+  kind: typeof OPENWORK_CLOUD_MCP_CONNECTION_ACTION_KIND
+  source: typeof OPENWORK_CLOUD_MCP_CONNECTION_ACTION_SOURCE
   layer: "mcp_connection" | "downstream_provider"
   connectionId: string
   connectionName: string
@@ -166,8 +187,8 @@ export type ExternalConnectionStatus = {
     label: string
     surface: "openwork_your_connections" | "openwork_organization_connections" | "provider_admin_console" | "network_infrastructure" | "openwork_support"
     retry: "search_capabilities"
+    url?: string
   }
-  diagnostic?: ExternalMcpDiagnostic
 }
 
 const ERROR_MESSAGE_LIMIT = 300
@@ -318,21 +339,106 @@ function diagnosticConnectionAction(input: {
   }
 }
 
+function actionNavigationUrl(input: {
+  connectionId: string
+  surface: ExternalConnectionStatus["action"]["surface"]
+}) {
+  if (input.surface === "openwork_your_connections") return openworkYourConnectionsUrl(input.connectionId)
+  if (input.surface === "openwork_organization_connections") return openworkOrganizationConnectionsUrl()
+  return undefined
+}
+
+function addConnectionActionUrl(input: {
+  action: ExternalConnectionStatus["action"]
+  connectionId: string
+}): ExternalConnectionStatus["action"] {
+  const url = actionNavigationUrl({ connectionId: input.connectionId, surface: input.action.surface })
+  return url ? { ...input.action, url } : input.action
+}
+
+function relayableProviderConnectUrl(connectUrl: string | undefined, connectionUrl: string): string | undefined {
+  if (!connectUrl) return undefined
+  try {
+    const candidate = new URL(connectUrl)
+    const connection = new URL(connectionUrl)
+    if (candidate.host !== connection.host) return undefined
+    return candidate.protocol === "http:" || candidate.protocol === "https:" ? candidate.toString() : undefined
+  } catch {
+    return undefined
+  }
+}
+
+function providerAuthorizationDiagnosticForConnection(input: {
+  diagnostic: ExternalMcpDiagnostic
+  connectionUrl: string
+}): ExternalMcpDiagnostic {
+  if (!input.diagnostic.connectUrl) return input.diagnostic
+  const connectUrl = relayableProviderConnectUrl(input.diagnostic.connectUrl, input.connectionUrl)
+  if (!connectUrl) {
+    const diagnostic = { ...input.diagnostic }
+    delete diagnostic.connectUrl
+    return diagnostic
+  }
+  return connectUrl === input.diagnostic.connectUrl
+    ? input.diagnostic
+    : { ...input.diagnostic, connectUrl }
+}
+
+function providerAuthorizationConnectionStatus(input: {
+  connection: Pick<ExternalMcpConnectionRow, "id" | "name" | "authType" | "credentialMode">
+  diagnostic: ExternalMcpDiagnostic
+  message: string
+}): ExternalConnectionStatus {
+  const status = buildExternalConnectionStatus({
+    connection: input.connection,
+    state: "needs_connection",
+    errorCode: "not_connected",
+    message: input.message,
+    diagnostic: input.diagnostic,
+    actionOwner: "member",
+    layer: "downstream_provider",
+  })
+  return {
+    ...status,
+    actor: "member",
+    action: {
+      type: "connect",
+      label: "Connect your provider account",
+      surface: "openwork_your_connections",
+      retry: "search_capabilities",
+      ...(input.diagnostic.connectUrl ? { url: input.diagnostic.connectUrl } : {}),
+    },
+  }
+}
+
 export function buildExternalConnectionStatus(input: {
   connection: Pick<ExternalMcpConnectionRow, "id" | "name" | "authType" | "credentialMode">
   state: ExternalConnectionStatus["state"]
   errorCode: ExternalConnectionStatus["errorCode"]
   message: string
   diagnostic?: ExternalMcpDiagnostic
+  actionOwner?: "member" | "organization_admin"
+  layer?: ExternalConnectionStatus["layer"]
 }): ExternalConnectionStatus {
   const connectionName = input.connection.name
-  const diagnosticAction = input.diagnostic
+  const actionContract = {
+    version: OPENWORK_CLOUD_MCP_CONNECTION_ACTION_VERSION,
+    kind: OPENWORK_CLOUD_MCP_CONNECTION_ACTION_KIND,
+    source: OPENWORK_CLOUD_MCP_CONNECTION_ACTION_SOURCE,
+  } as const
+  // Once the failure is classified as reauthentication, credential ownership
+  // is the source of truth for who can repair it. A generic HTTP 400 during a
+  // refresh may classify the raw diagnostic as provider_admin, but routing a
+  // per-member expired token to a provider console contradicts the
+  // reauth_required state and prevents the client from offering reconnect.
+  const diagnosticAction = input.diagnostic && input.state !== "reauth_required"
     ? diagnosticConnectionAction({ connection: input.connection, state: input.state, diagnostic: input.diagnostic })
     : null
   if (input.state === "provider_error") {
     const providerAdminAction = PROVIDER_ADMIN_ACTION_PATTERN.test(input.message)
     return {
-      layer: input.diagnostic ? "mcp_connection" : "downstream_provider",
+      ...actionContract,
+      layer: input.layer ?? (input.diagnostic ? "mcp_connection" : "downstream_provider"),
       connectionId: input.connection.id,
       connectionName,
       authType: input.connection.authType,
@@ -341,20 +447,25 @@ export function buildExternalConnectionStatus(input: {
       errorCode: input.errorCode,
       message: input.message,
       actor: diagnosticAction?.actor ?? (providerAdminAction ? "provider_admin" : "organization_admin"),
-      action: diagnosticAction?.action ?? {
-        type: providerAdminAction ? "fix_provider" : "inspect_connection",
-        label: providerAdminAction
-          ? `Fix ${connectionName} in the provider admin console`
-          : `Inspect the ${connectionName} connection`,
-        surface: providerAdminAction ? "provider_admin_console" : "openwork_organization_connections",
-        retry: "search_capabilities",
-      },
-      ...(input.diagnostic ? { diagnostic: input.diagnostic } : {}),
+      action: diagnosticAction
+        ? addConnectionActionUrl({ action: diagnosticAction.action, connectionId: input.connection.id })
+        : addConnectionActionUrl({
+          connectionId: input.connection.id,
+          action: {
+            type: providerAdminAction ? "fix_provider" : "inspect_connection",
+            label: providerAdminAction
+              ? `Fix ${connectionName} in the provider admin console`
+              : `Inspect the ${connectionName} connection`,
+            surface: providerAdminAction ? "provider_admin_console" : "openwork_organization_connections",
+            retry: "search_capabilities",
+          },
+        }),
     }
   }
 
-  const actor = input.connection.credentialMode === "per_member" ? "member" : "organization_admin"
-  const surface = input.connection.credentialMode === "per_member"
+  const actor = input.actionOwner
+    ?? (input.connection.credentialMode === "per_member" ? "member" : "organization_admin")
+  const surface = actor === "member"
     ? "openwork_your_connections"
     : "openwork_organization_connections"
   const actionType = input.state === "needs_connection"
@@ -372,7 +483,8 @@ export function buildExternalConnectionStatus(input: {
         ? "Update credentials for"
         : "Inspect"
   return {
-    layer: input.diagnostic ? "mcp_connection" : "downstream_provider",
+    ...actionContract,
+    layer: input.layer ?? (input.diagnostic ? "mcp_connection" : "downstream_provider"),
     connectionId: input.connection.id,
     connectionName,
     authType: input.connection.authType,
@@ -381,13 +493,17 @@ export function buildExternalConnectionStatus(input: {
     errorCode: input.errorCode,
     message: input.message,
     actor: diagnosticAction?.actor ?? actor,
-    action: diagnosticAction?.action ?? {
-      type: actionType,
-      label: `${actionVerb} ${connectionName}`,
-      surface,
-      retry: "search_capabilities",
-    },
-    ...(input.diagnostic ? { diagnostic: input.diagnostic } : {}),
+    action: diagnosticAction
+      ? addConnectionActionUrl({ action: diagnosticAction.action, connectionId: input.connection.id })
+      : addConnectionActionUrl({
+        connectionId: input.connection.id,
+        action: {
+          type: actionType,
+          label: `${actionVerb} ${connectionName}`,
+          surface,
+          retry: "search_capabilities",
+        },
+      }),
   }
 }
 
@@ -507,6 +623,28 @@ async function probeExternalMcpConnection(input: {
     mergeBoundedExternalCapabilityMatches(matches, [match], input.limit)
   }
   const connection = input.connection
+  if (connection.oauthIssuerReviewRequiredAt) {
+    const nameTokens = tokenize(connection.name)
+    const score = scoreText(nameTokens, nameTokens, input.queryTokens)
+    if (score > 0) {
+      const message = `${connection.name} is blocked until an organization admin reviews its changed OAuth issuer.`
+      add(statusMatch({
+        connection,
+        score,
+        summary: `[${connection.name}] OAuth provider settings changed and require administrator review.`,
+        status: "error",
+        hint: `Ask an org admin to open OpenWork Cloud -> Connectors, review the live OAuth issuer for "${connection.name}", and reconnect if requested.`,
+        connectionStatus: buildExternalConnectionStatus({
+          connection,
+          state: "reauth_required",
+          errorCode: "unauthorized",
+          message,
+          actionOwner: "organization_admin",
+        }),
+      }))
+    }
+    return matches
+  }
   if (connection.credentialMode === "per_member") {
     const account = await getConnectedAccount({
       organizationId: connection.organizationId,
@@ -610,6 +748,9 @@ async function probeExternalMcpConnection(input: {
       pathParams: [],
       queryParams: [],
       hasBody: true,
+      argumentsSchema: tool.inputSchema,
+      schemaDigest: externalMcpToolSchemaDigest(tool.inputSchema),
+      invocation: { argumentsField: "body" },
     })
   }
   return matches
@@ -662,16 +803,135 @@ export async function searchExternalCapabilities(input: {
   })
 }
 
+export type ExternalMcpSchemaWarning =
+  | {
+      code: "arguments_schema_mismatch"
+      message: string
+      issues: ExternalMcpArgumentIssue[]
+      suggestedAction: string
+    }
+  | {
+      code: "arguments_schema_unavailable"
+      message: string
+      suggestedAction: string
+    }
+  | {
+      code: "capability_schema_changed"
+      message: string
+      searchedSchemaDigest: string
+      currentSchemaDigest: string
+      suggestedAction: string
+    }
+
+export type ExternalMcpSchemaGuidance = {
+  advisory: true
+  providerCallAttempted: true
+  message: string
+  warnings: ExternalMcpSchemaWarning[]
+}
+
 export type ExternalCapabilityExecuteResult =
-  | { ok: true; result: Awaited<ReturnType<typeof callExternalMcpTool>> }
+  | {
+      ok: true
+      result: Awaited<ReturnType<typeof callExternalMcpTool>>
+      schemaGuidance?: ExternalMcpSchemaGuidance
+    }
   | {
       ok: false
-      error: "unknown_capability" | "forbidden" | "connection_not_connected" | "needs_connection" | "connection_failed" | "provider_error"
+      error:
+        | "unknown_capability"
+        | "forbidden"
+        | "connection_not_connected"
+        | "needs_connection"
+        | "connection_failed"
+        | "provider_error"
+        | "invalid_capability_arguments"
       message: string
-      diagnostic?: ExternalMcpDiagnostic
-      actionOwner?: ExternalMcpDiagnostic["actionOwner"]
-      operatorAction?: string
+      referenceId?: string
+      retryable?: boolean
+      providerError?: ExternalMcpProviderError
+      connectionStatus?: ExternalConnectionStatus
+      capability?: string
+      issues?: ExternalMcpArgumentIssue[]
+      schemaDigest?: string
+      sameArgumentsRetryable?: false
+      retry?: {
+        action: "correct_arguments" | "search_capabilities"
+        searchRequired: boolean
+      }
+      schemaGuidance?: ExternalMcpSchemaGuidance
     }
+
+export type ExternalMcpProviderError = {
+  jsonRpcCode?: number
+  message?: string
+  data?: string
+}
+
+function providerErrorFromDiagnostic(diagnostic: ExternalMcpDiagnostic): ExternalMcpProviderError | undefined {
+  if (
+    diagnostic.jsonRpcCode === undefined
+    && !diagnostic.providerErrorMessage
+    && !diagnostic.providerErrorData
+  ) return undefined
+  return {
+    ...(diagnostic.jsonRpcCode === undefined ? {} : { jsonRpcCode: diagnostic.jsonRpcCode }),
+    ...(diagnostic.providerErrorMessage ? { message: diagnostic.providerErrorMessage } : {}),
+    ...(diagnostic.providerErrorData ? { data: diagnostic.providerErrorData } : {}),
+  }
+}
+
+function diagnosticAgentMessage(diagnostic: ExternalMcpDiagnostic): string {
+  return `${diagnostic.message} ${diagnostic.operatorAction} Diagnostic reference: ${diagnostic.referenceId}.`
+}
+
+function diagnosticAgentFields(diagnostic: ExternalMcpDiagnostic) {
+  const providerError = providerErrorFromDiagnostic(diagnostic)
+  return {
+    referenceId: diagnostic.referenceId,
+    retryable: diagnostic.retryable,
+    ...(providerError ? { providerError } : {}),
+  }
+}
+
+function invalidCapabilityArguments(input: {
+  capability: string
+  schemaDigest?: string
+  issues?: ExternalMcpArgumentIssue[]
+  diagnostic?: ExternalMcpDiagnostic
+  schemaGuidance?: ExternalMcpSchemaGuidance
+}): Exclude<ExternalCapabilityExecuteResult, { ok: true }> {
+  return {
+    ok: false,
+    error: "invalid_capability_arguments",
+    capability: input.capability,
+    message: input.diagnostic
+      ? diagnosticAgentMessage(input.diagnostic)
+      : "The capability arguments do not match the remote MCP tool's advertised argumentsSchema.",
+    issues: input.issues ?? [{
+      path: "/",
+      keyword: "schema_validation",
+      message: "The remote MCP rejected these arguments as invalid. Correct them using the latest argumentsSchema.",
+    }],
+    ...(input.schemaDigest ? { schemaDigest: input.schemaDigest } : {}),
+    sameArgumentsRetryable: false,
+    retry: { action: "correct_arguments", searchRequired: false },
+    ...(input.schemaGuidance ? { schemaGuidance: input.schemaGuidance } : {}),
+    ...(input.diagnostic ? diagnosticAgentFields(input.diagnostic) : {}),
+  }
+}
+
+function advisorySchemaGuidance(
+  warnings: ExternalMcpSchemaWarning[],
+): ExternalMcpSchemaGuidance | undefined {
+  if (warnings.length === 0) return undefined
+  return {
+    advisory: true,
+    providerCallAttempted: true,
+    message: "OpenWork forwarded the call to the provider. These local schema checks are guidance only; use the provider result as the source of truth.",
+    warnings,
+  }
+}
 
 /**
  * Executes a namespaced external capability, scoped to the calling
@@ -684,7 +944,8 @@ export async function executeExternalCapability(input: {
   member: McpMemberIdentity | null
   connectionId: string
   toolName: string
-  args: Record<string, unknown>
+  args: unknown
+  schemaDigest?: string
   redirectUriBase: string
 }): Promise<ExternalCapabilityExecuteResult> {
   if (!input.member) {
@@ -719,11 +980,29 @@ export async function executeExternalCapability(input: {
     return { ok: false, error: "forbidden", message: `You have not been granted access to "${connection.name}".` }
   }
 
-  if (input.toolName === "*") {
+  if (connection.oauthIssuerReviewRequiredAt) {
+    const message = `"${connection.name}" is blocked until an organization admin reviews its changed OAuth issuer.`
     return {
       ok: false,
       error: "needs_connection",
-      message: `"${connection.name}" was surfaced as a connection status entry, not a callable tool. Fix the connection first (see the search hint), then search again for its real tools.`,
+      message,
+      connectionStatus: buildExternalConnectionStatus({
+        connection,
+        state: "reauth_required",
+        errorCode: "unauthorized",
+        message,
+        actionOwner: "organization_admin",
+      }),
+    }
+  }
+
+  if (input.toolName === "*") {
+    const message = `"${connection.name}" was surfaced as a connection status entry, not a callable tool. Fix the connection first (see the search hint), then search again for its real tools.`
+    return {
+      ok: false,
+      error: "needs_connection",
+      message,
+      connectionStatus: buildExternalConnectionStatus({ connection, state: "needs_connection", errorCode: "not_connected", message }),
     }
   }
 
@@ -739,39 +1018,161 @@ export async function executeExternalCapability(input: {
         ok: false,
         error: "needs_connection",
         message: `You haven't connected your ${connection.name} account yet. Open OpenWork Cloud -> Your Connections and click Connect on "${connection.name}".`,
+        connectionStatus: buildExternalConnectionStatus({
+          connection,
+          state: "needs_connection",
+          errorCode: "not_connected",
+          message: `You haven't connected your ${connection.name} account yet.`,
+        }),
       }
     }
     member = { orgMembershipId: input.member.orgMembershipId }
   } else if (!hasSharedCredential(connection)) {
-    return { ok: false, error: "connection_not_connected", message: `"${connection.name}" is not connected yet.` }
+    const message = `"${connection.name}" is not connected yet.`
+    return {
+      ok: false,
+      error: "connection_not_connected",
+      message,
+      connectionStatus: buildExternalConnectionStatus({ connection, state: "needs_connection", errorCode: "not_connected", message }),
+    }
   }
 
+  let currentSchemaDigest: string | undefined
+  let schemaGuidance: ExternalMcpSchemaGuidance | undefined
   try {
-    const result = await callExternalMcpTool({
+    const redirectUri = redirectUriFor(input.redirectUriBase, connection.id)
+    const tools = await listExternalMcpTools(connection, redirectUri, member)
+    const tool = tools.find((candidate) => candidate.name === input.toolName)
+    if (!tool) {
+      return {
+        ok: false,
+        error: "unknown_capability",
+        capability: buildExternalCapabilityName(connection.id, input.toolName),
+        message: `No current tool named "${input.toolName}" exists on "${connection.name}". Call search_capabilities again.`,
+        sameArgumentsRetryable: false,
+        retry: { action: "search_capabilities", searchRequired: true },
+      }
+    }
+
+    const schemaDigest = externalMcpToolSchemaDigest(tool.inputSchema)
+    currentSchemaDigest = schemaDigest
+    const schemaWarnings: ExternalMcpSchemaWarning[] = []
+    if (input.schemaDigest && input.schemaDigest !== schemaDigest) {
+      schemaWarnings.push({
+        code: "capability_schema_changed",
+        message: "The provider advertised a different capability schema after discovery, but OpenWork still forwarded the call.",
+        searchedSchemaDigest: input.schemaDigest,
+        currentSchemaDigest: schemaDigest,
+        suggestedAction: "If the provider call failed, call search_capabilities again and retry with the latest argumentsSchema. Do not retry solely because of this warning when the provider call succeeded.",
+      })
+    }
+
+    // MCP tool arguments are always an object at the protocol boundary. Start
+    // the provider call before advisory validation so a provider with an
+    // inaccurate or unsupported advertised schema still gets the request.
+    const forwardedArguments = isRecord(input.args) ? input.args : {}
+    const providerCall = callExternalMcpTool({
       connection,
-      redirectUri: redirectUriFor(input.redirectUriBase, connection.id),
+      redirectUri,
       toolName: input.toolName,
-      args: input.args,
+      args: forwardedArguments,
       member,
     })
-    return { ok: true, result }
+
+    const validation = validateExternalMcpToolArguments(tool.inputSchema, input.args)
+    if (!validation.ok && validation.error === "invalid_arguments") {
+      schemaWarnings.push({
+        code: "arguments_schema_mismatch",
+        message: "The arguments do not match the provider's advertised argumentsSchema, but OpenWork still forwarded the call because the provider may accept them.",
+        issues: validation.issues,
+        suggestedAction: "If the provider call failed, correct the listed issues and retry with changed arguments. Do not retry solely because of this warning when the provider call succeeded.",
+      })
+    } else if (!validation.ok) {
+      schemaWarnings.push({
+        code: "arguments_schema_unavailable",
+        message: validation.message,
+        suggestedAction: "Use the provider result as the source of truth. If the call failed, the provider administrator may need to repair the advertised inputSchema.",
+      })
+    }
+
+    schemaGuidance = advisorySchemaGuidance(schemaWarnings)
+    const result = await providerCall
+    return {
+      ok: true,
+      result,
+      ...(schemaGuidance ? { schemaGuidance } : {}),
+    }
   } catch (error) {
+    const message = upstreamErrorMessage(error)
+    const authErrorCode = externalMcpAuthErrorCode(error, message)
     if (error instanceof ExternalMcpDiagnosticError) {
+      const diagnostic = error.diagnostic.code === "MCP_PROVIDER_AUTH_REQUIRED"
+        ? providerAuthorizationDiagnosticForConnection({ diagnostic: error.diagnostic, connectionUrl: connection.url })
+        : error.diagnostic
+      const log = externalMcpDiagnosticForLog(error, error.diagnostic.referenceId, "MCP_TOOL_EXECUTION")
       console.error("external_mcp_capability_execute_failed", {
         connectionId: connection.id,
         organizationId: connection.organizationId,
         connectionEndpoint: safeExternalMcpEndpointForLog(connection.url),
-        ...externalMcpDiagnosticForLog(error, error.diagnostic.referenceId, "MCP_TOOL_EXECUTION"),
+        ...log,
+        diagnostic,
       })
+      if (diagnostic.code === "MCP_INVALID_PARAMS" || diagnostic.code === "MCP_PROVIDER_INVALID_PARAMS") {
+        return invalidCapabilityArguments({
+          capability: buildExternalCapabilityName(connection.id, input.toolName),
+          schemaDigest: currentSchemaDigest ?? input.schemaDigest,
+          diagnostic,
+          schemaGuidance,
+        })
+      }
+      if (diagnostic.code === "MCP_PROVIDER_AUTH_REQUIRED") {
+        const resultMessage = diagnosticAgentMessage(diagnostic)
+        return {
+          ok: false,
+          error: "needs_connection",
+          message: resultMessage,
+          ...diagnosticAgentFields(diagnostic),
+          connectionStatus: providerAuthorizationConnectionStatus({
+            connection,
+            diagnostic,
+            message: resultMessage,
+          }),
+          ...(schemaGuidance ? { schemaGuidance } : {}),
+        }
+      }
       return {
         ok: false,
-        error: error.diagnostic.phase === "PROVIDER_EXECUTION" || error.diagnostic.phase === "PROVIDER_AUTHORIZATION"
+        error: diagnostic.phase === "PROVIDER_EXECUTION" || diagnostic.phase === "PROVIDER_AUTHORIZATION"
           ? "provider_error"
           : "connection_failed",
-        message: `${error.diagnostic.message} ${error.diagnostic.operatorAction} Diagnostic reference: ${error.diagnostic.referenceId}.`,
-        diagnostic: error.diagnostic,
-        actionOwner: error.diagnostic.actionOwner,
-        operatorAction: error.diagnostic.operatorAction,
+        message: diagnosticAgentMessage(diagnostic),
+        ...diagnosticAgentFields(diagnostic),
+        ...(schemaGuidance ? { schemaGuidance } : {}),
+        ...(authErrorCode
+          ? {
+              connectionStatus: buildExternalConnectionStatus({
+                connection,
+                state: "reauth_required",
+                errorCode: authErrorCode,
+                message,
+                diagnostic,
+              }),
+            }
+          : {}),
+      }
+    }
+    if (authErrorCode) {
+      return {
+        ok: false,
+        error: "connection_failed",
+        message,
+        ...(schemaGuidance ? { schemaGuidance } : {}),
+        connectionStatus: buildExternalConnectionStatus({
+          connection,
+          state: "reauth_required",
+          errorCode: authErrorCode,
+          message,
+        }),
       }
     }
     throw error

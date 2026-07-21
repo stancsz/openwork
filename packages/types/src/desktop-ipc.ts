@@ -12,6 +12,7 @@
  * main process resolves. Results marked `unknown` are not yet modeled —
  * tighten them instead of widening call sites.
  */
+import type { ConnectLinkVerifyFailure, ConnectLinkVerifyResult } from "./connect-link.js";
 import type { WorkspaceWire } from "./workspace.js";
 
 // ---------------------------------------------------------------------------
@@ -35,6 +36,7 @@ export type OpencodeExecutionSnapshot = {
 export type EngineInfo = {
   running: boolean;
   runtime: "direct";
+  managedByServer: boolean;
   baseUrl: string | null;
   projectDir: string | null;
   hostname: string | null;
@@ -290,11 +292,40 @@ export type CacheResetResult = {
   errors: string[];
 };
 
+export type NukeManifestPreview = {
+  deletePaths: string[];
+  bootstrapPath: string;
+  preserveBootstrapPath: string | null;
+  partitions: string[];
+};
+
+export type NukeOptions = {
+  preserveBootstrap: boolean;
+};
+
+export type NukeReceiptError = {
+  path: string;
+  message: string;
+  code?: string;
+};
+
+export type NukeReceipt = {
+  deleted: string[];
+  pendingRetry: string[];
+  errors: NukeReceiptError[];
+  preservedBootstrap: boolean;
+  relaunchMode: "cleanup_worker" | "direct";
+  workerScheduled: boolean;
+};
+
 export type DesktopFetchInit = {
   method?: string;
   headers?: Record<string, string>;
   body?: string;
   timeoutMs?: number;
+  agentContextDiagnostics?: {
+    deadlineAtMs: number;
+  };
 };
 
 export type DesktopFetchResult = {
@@ -442,7 +473,18 @@ export type DesktopCommandMap = {
     args: [config: Partial<DesktopBootstrapConfig>];
     result: DesktopBootstrapConfig;
   };
-  nukeOpenworkAndOpencodeConfigAndExit: { args: []; result: unknown };
+
+  // Connect links use a short-lived HTTPS exchange by default and can use an
+  // embedded-key signed token when explicitly enabled. The renderer relays
+  // only the raw URL. `connectLinkAccept` resolves it again after confirmation,
+  // enforces one-time use, and persists the target as desktop bootstrap config.
+  connectLinkVerify: { args: [rawUrl: string]; result: ConnectLinkVerifyResult };
+  connectLinkAccept: {
+    args: [rawUrl: string];
+    result: { ok: true; config: DesktopBootstrapConfig } | ConnectLinkVerifyFailure;
+  };
+  nukeOpenworkAndOpencodeConfigPreview: { args: [options?: NukeOptions]; result: NukeManifestPreview };
+  nukeOpenworkAndOpencodeConfigAndExit: { args: [options?: NukeOptions]; result: NukeReceipt };
 
   // Sandbox
   sandboxDoctor: { args: []; result: SandboxDoctorResult };

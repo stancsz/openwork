@@ -30,6 +30,67 @@ function networkError(code: string, secret = "Bearer super-secret-token") {
   return new Error("fetch failed", { cause })
 }
 
+function jsonRpcError(code: number, data?: Record<string, unknown>) {
+  const error = new Error(`MCP error ${code}: synthetic provider detail`)
+  Object.defineProperty(error, "code", { value: code, enumerable: true })
+  if (data) Object.defineProperty(error, "data", { value: data, enumerable: true })
+  return error
+}
+
+async function wrappedMcpJsonResponse(input: {
+  responseText: string
+  contentLength?: string
+}) {
+  const tracker = new ExternalMcpDiagnosticTracker("req_provider_declared_body")
+  const headers = new Headers({ "content-type": "application/json" })
+  if (input.contentLength) headers.set("content-length", input.contentLength)
+  const diagnosticFetch = createExternalMcpDiagnosticFetch({
+    endpoint: "https://gateway.example.com/mcp",
+    tracker,
+    fetch: async () => new Response(input.responseText, {
+      status: 200,
+      headers,
+    }),
+  })
+  const response = await diagnosticFetch("https://gateway.example.com/mcp", {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({ jsonrpc: "2.0", id: 1, method: "tools/call", params: {} }),
+  })
+  return { tracker, response }
+}
+
+async function diagnosticForMcpJsonResponse(input: {
+  responseBody: unknown
+  thrownError?: Error
+}) {
+  const { tracker } = await wrappedMcpJsonResponse({ responseText: JSON.stringify(input.responseBody) })
+  return tracker.error(input.thrownError ?? new Error("SDK rejected provider response")).diagnostic
+}
+
+function captureConsoleError<T>(run: () => T): { result: T; errors: unknown[][] } {
+  const errors: unknown[][] = []
+  const originalError = console.error
+  console.error = (...args: unknown[]) => {
+    errors.push(args)
+  }
+  try {
+    return { result: run(), errors }
+  } finally {
+    console.error = originalError
+  }
+}
+
+function serializedConsoleErrors(errors: unknown[][]): string {
+  return errors
+    .flat()
+    .map((entry) => {
+      const serialized = typeof entry === "string" ? entry : JSON.stringify(entry)
+      return serialized ?? ""
+    })
+    .join(" ")
+}
+
 class RecordingOAuthProvider implements OAuthClientProvider {
   client: OAuthClientInformationMixed | undefined
   tokensValue: OAuthTokens | undefined
@@ -281,7 +342,13 @@ describe("external MCP diagnostics", () => {
 
     const error = tracker.error(new Error("initialize failed"))
     expect(error.diagnostic.highestPassed).toBe("reachable")
-    expect(error.diagnostic).not.toHaveProperty("jsonRpcCode")
+    expect(error.diagnostic).toMatchObject({
+      phase: "PROVIDER_EXECUTION",
+      operationPhase: "MCP_INITIALIZE",
+      category: "provider_declared_error",
+      code: "MCP_PROVIDER_DECLARED_ERROR",
+      jsonRpcCode: -32603,
+    })
     expect(JSON.stringify(error)).not.toContain("must-not-be-retained")
   })
 
@@ -341,7 +408,7 @@ describe("external MCP diagnostics", () => {
     })
   })
 
-  test("classifies allowlisted provider tool results without exposing provider content", () => {
+  test("classifies allowlisted provider tool results with bounded provider text", () => {
     const makeToolError = (referenceId: string, structuredContent: Record<string, unknown>) => {
       const tracker = new ExternalMcpDiagnosticTracker(referenceId)
       tracker.passed("MCP_INITIALIZED", "protocol_ready")
@@ -352,12 +419,27 @@ describe("external MCP diagnostics", () => {
       })
     }
 
-    const denied = makeToolError("req_provider_denied", {
-      category: "provider_policy",
-      providerStatus: 403,
-      providerCode: "sensitive-provider-code",
-      requestId: "provider-request-403",
-    })
+    const { result: toolErrors } = captureConsoleError(() => ({
+      denied: makeToolError("req_provider_denied", {
+        category: "provider_policy",
+        providerStatus: 403,
+        providerCode: "sensitive-provider-code",
+        requestId: "provider-request-403",
+      }),
+      throttled: makeToolError("req_provider_throttled", {
+        category: "provider_api",
+        providerStatus: 429,
+        requestId: "provider-request-429",
+        retryAfterSeconds: "provider-secret-retry-value",
+      }),
+      unknown: makeToolError("req_provider_unknown", {
+        category: "provider_api",
+        providerStatus: 403,
+        providerCode: "sensitive-unknown-code",
+        requestId: "invalid request id with spaces",
+      }),
+    }))
+    const { denied, throttled, unknown } = toolErrors
     expect(denied.diagnostic).toMatchObject({
       phase: "PROVIDER_AUTHORIZATION",
       category: "provider_policy_denied",
@@ -366,14 +448,9 @@ describe("external MCP diagnostics", () => {
       retryable: false,
       actionOwner: "provider_admin",
       providerRequestId: "provider-request-403",
+      providerErrorMessage: "provider-secret-message",
     })
 
-    const throttled = makeToolError("req_provider_throttled", {
-      category: "provider_api",
-      providerStatus: 429,
-      requestId: "provider-request-429",
-      retryAfterSeconds: "provider-secret-retry-value",
-    })
     expect(throttled.diagnostic).toMatchObject({
       phase: "PROVIDER_EXECUTION",
       category: "provider_throttled",
@@ -382,14 +459,9 @@ describe("external MCP diagnostics", () => {
       retryable: true,
       actionOwner: "provider_admin",
       providerRequestId: "provider-request-429",
+      providerErrorMessage: "provider-secret-message",
     })
 
-    const unknown = makeToolError("req_provider_unknown", {
-      category: "provider_api",
-      providerStatus: 403,
-      providerCode: "sensitive-unknown-code",
-      requestId: "invalid request id with spaces",
-    })
     expect(unknown.diagnostic).toMatchObject({
       phase: "PROVIDER_EXECUTION",
       category: "provider_tool_error",
@@ -397,15 +469,523 @@ describe("external MCP diagnostics", () => {
       highestPassed: "protocol_ready",
       retryable: false,
       actionOwner: "provider_admin",
+      providerErrorMessage: "provider-secret-message",
     })
     expect(unknown.diagnostic.providerRequestId).toBeUndefined()
 
     const serialized = JSON.stringify([denied, throttled, unknown])
-    expect(serialized).not.toContain("provider-secret-message")
+    expect(serialized).toContain("provider-secret-message")
     expect(serialized).not.toContain("sensitive-provider-code")
     expect(serialized).not.toContain("provider-secret-retry-value")
     expect(serialized).not.toContain("sensitive-unknown-code")
     expect(serialized).not.toContain("invalid request id with spaces")
+  })
+
+  test("classifies remote invalid params as correctable tool input", () => {
+    const tracker = new ExternalMcpDiagnosticTracker("req_invalid_params")
+    tracker.begin("MCP_TOOL_EXECUTION")
+    const invalidParams = new Error("Provider rejected private argument detail")
+    Object.defineProperty(invalidParams, "code", { value: -32602 })
+
+    const error = tracker.error(invalidParams)
+    expect(error.diagnostic).toMatchObject({
+      phase: "MCP_TOOL_EXECUTION",
+      category: "mcp_tool_input_invalid",
+      code: "MCP_INVALID_PARAMS",
+      actionOwner: "openwork",
+      retryable: false,
+      jsonRpcCode: -32602,
+      providerErrorMessage: "Provider rejected private argument detail",
+    })
+    expect(error.diagnostic.operatorAction).toContain("do not retry the same arguments")
+  })
+
+  test("classifies downstream provider authorization links without treating -32001 as a timeout", () => {
+    const connectUrl = "https://mcp-gateway.fixture.test/servers/salesforce/connect/start"
+    const tracker = new ExternalMcpDiagnosticTracker("req_provider_auth")
+    tracker.begin("MCP_TOOL_EXECUTION")
+    const error = tracker.error(new Error("wrapped SDK error", {
+      cause: jsonRpcError(-32001, { connect_url: connectUrl, provider: "salesforce" }),
+    }))
+
+    expect(error.diagnostic).toMatchObject({
+      phase: "PROVIDER_AUTHORIZATION",
+      category: "provider_authorization_required",
+      code: "MCP_PROVIDER_AUTH_REQUIRED",
+      retryable: false,
+      actionOwner: "member",
+      connectUrl,
+      jsonRpcCode: -32001,
+    })
+    expect(error.diagnostic.message).not.toContain("timeout")
+    expect(error.diagnostic.operatorAction).not.toContain("salesforce")
+  })
+
+  test("classifies URL elicitation as downstream provider authorization", () => {
+    const connectUrl = "https://mcp-gateway.fixture.test/servers/salesforce/connect/start"
+    const tracker = new ExternalMcpDiagnosticTracker("req_url_elicitation")
+    tracker.begin("MCP_TOOL_EXECUTION")
+    const error = tracker.error(jsonRpcError(-32042, { url: connectUrl }))
+
+    expect(error.diagnostic).toMatchObject({
+      phase: "PROVIDER_AUTHORIZATION",
+      category: "provider_authorization_required",
+      code: "MCP_PROVIDER_AUTH_REQUIRED",
+      retryable: false,
+      actionOwner: "member",
+      connectUrl,
+      jsonRpcCode: -32042,
+    })
+  })
+
+  test("captures provider-declared connect_url from 200 JSON-RPC error bodies with null ids", async () => {
+    const connectUrl = "https://gateway.example.com/auth/connect?tenant=t1"
+    const responseBody = {
+      jsonrpc: "2.0",
+      id: null,
+      error: {
+        code: -32001,
+        message: "Authorization required. Visit the connect portal.",
+        data: { connect_url: connectUrl, provider: "northwind" },
+      },
+    }
+    const responseText = JSON.stringify(responseBody)
+    const { tracker, response } = await wrappedMcpJsonResponse({ responseText })
+    expect(await response.text()).toBe(responseText)
+
+    const diagnostic = tracker.error(new Error("ZodError: invalid input")).diagnostic
+
+    expect(diagnostic).toMatchObject({
+      phase: "PROVIDER_AUTHORIZATION",
+      category: "provider_authorization_required",
+      code: "MCP_PROVIDER_AUTH_REQUIRED",
+      retryable: false,
+      actionOwner: "member",
+      connectUrl,
+      jsonRpcCode: -32001,
+      providerErrorMessage: "Authorization required. Visit the connect portal.",
+    })
+    expect(diagnostic.message).toContain("Provider-declared message (untrusted): \"Authorization required. Visit the connect portal.\"")
+  })
+
+  test("leaves sniff-eligible JSON-RPC success bodies intact without recording error evidence", async () => {
+    const responseText = JSON.stringify({ jsonrpc: "2.0", id: 3, result: { content: [] } })
+    const { tracker, response } = await wrappedMcpJsonResponse({ responseText })
+    expect(await response.text()).toBe(responseText)
+
+    const diagnostic = tracker.error(new Error("later SDK failure")).diagnostic
+    expect(diagnostic).toMatchObject({
+      phase: "MCP_TOOL_EXECUTION",
+      category: "mcp_protocol_failure",
+      code: "MCP_MCP_TOOL_EXECUTION",
+      retryable: false,
+      actionOwner: "provider_admin",
+    })
+    expect(diagnostic.connectUrl).toBeUndefined()
+    expect(diagnostic.jsonRpcCode).toBeUndefined()
+  })
+
+  test("skips provider-declared sniffing above the 64KB cap while preserving the body", async () => {
+    const connectUrl = "https://gateway.example.com/auth/connect?tenant=large"
+    const responseText = JSON.stringify({
+      jsonrpc: "2.0",
+      id: null,
+      error: {
+        code: -32001,
+        message: "Authorization required",
+        data: { connect_url: connectUrl },
+      },
+      padding: "x".repeat(70 * 1024),
+    })
+    const { tracker, response } = await wrappedMcpJsonResponse({
+      responseText,
+      contentLength: String(Buffer.byteLength(responseText, "utf8")),
+    })
+    expect(await response.text()).toBe(responseText)
+
+    const diagnostic = tracker.error(new Error("later SDK failure")).diagnostic
+    expect(diagnostic).toMatchObject({
+      phase: "MCP_TOOL_EXECUTION",
+      category: "mcp_protocol_failure",
+      code: "MCP_MCP_TOOL_EXECUTION",
+      retryable: false,
+      actionOwner: "provider_admin",
+    })
+    expect(diagnostic.connectUrl).toBeUndefined()
+    expect(diagnostic.jsonRpcCode).toBeUndefined()
+  })
+
+  test("keeps local SDK request timeouts classified as request timeouts", () => {
+    const tracker = new ExternalMcpDiagnosticTracker("req_timeout")
+    tracker.begin("MCP_TOOL_EXECUTION")
+    const error = tracker.error(jsonRpcError(-32001, { timeout: 30000 }))
+
+    expect(error.diagnostic).toMatchObject({
+      phase: "MCP_TOOL_EXECUTION",
+      category: "request_timeout",
+      code: "MCP_REQUEST_TIMEOUT",
+      retryable: true,
+      actionOwner: "provider_admin",
+      jsonRpcCode: -32001,
+    })
+    expect(error.diagnostic.connectUrl).toBeUndefined()
+  })
+
+  test("classifies remote -32001 without local timeout data as provider-declared", () => {
+    const tracker = new ExternalMcpDiagnosticTracker("req_remote_32001")
+    tracker.begin("MCP_TOOL_EXECUTION")
+    const error = tracker.error(jsonRpcError(-32001, { provider_detail: "must-not-surface" }))
+
+    expect(error.diagnostic).toMatchObject({
+      phase: "PROVIDER_EXECUTION",
+      category: "provider_declared_error",
+      code: "MCP_PROVIDER_DECLARED_ERROR",
+      retryable: false,
+      actionOwner: "provider_admin",
+      jsonRpcCode: -32001,
+      providerErrorMessage: "MCP error -32001: synthetic provider detail",
+      providerErrorData: '{"provider_detail":"must-not-surface"}',
+    })
+  })
+
+  test("captures URL elicitation links from 200 JSON-RPC error bodies with null ids", async () => {
+    const connectUrl = "https://gateway.example.com/auth/url-elicitation"
+    const diagnostic = await diagnosticForMcpJsonResponse({
+      responseBody: {
+        jsonrpc: "2.0",
+        id: null,
+        error: { code: -32042, message: "URL required", data: { url: connectUrl } },
+      },
+    })
+
+    expect(diagnostic).toMatchObject({
+      phase: "PROVIDER_AUTHORIZATION",
+      category: "provider_authorization_required",
+      code: "MCP_PROVIDER_AUTH_REQUIRED",
+      retryable: false,
+      actionOwner: "member",
+      connectUrl,
+      jsonRpcCode: -32042,
+    })
+  })
+
+  test("classifies unknown server-range JSON-RPC body codes as provider-declared with sanitized text and data", async () => {
+    const diagnostic = await diagnosticForMcpJsonResponse({
+      responseBody: {
+        jsonrpc: "2.0",
+        id: null,
+        error: {
+          code: -32050,
+          message: "boom\u0007\n\nline2   spaced",
+          data: { reason: "tenant_suspended", ticket: "T-123" },
+        },
+      },
+    })
+
+    expect(diagnostic).toMatchObject({
+      phase: "PROVIDER_EXECUTION",
+      category: "provider_declared_error",
+      code: "MCP_PROVIDER_DECLARED_ERROR",
+      retryable: false,
+      actionOwner: "provider_admin",
+      jsonRpcCode: -32050,
+      providerErrorMessage: "boom line2 spaced",
+      providerErrorData: '{"reason":"tenant_suspended","ticket":"T-123"}',
+    })
+    expect(diagnostic.message).toContain("code -32050")
+    expect(diagnostic.message).toContain('Provider-declared message (untrusted): "boom line2 spaced"')
+  })
+
+  test("caps provider-declared messages at 512 characters", async () => {
+    const longMessage = "x".repeat(700)
+    const diagnostic = await diagnosticForMcpJsonResponse({
+      responseBody: {
+        jsonrpc: "2.0",
+        id: null,
+        error: { code: -32051, message: longMessage },
+      },
+    })
+
+    expect(diagnostic).toMatchObject({
+      phase: "PROVIDER_EXECUTION",
+      category: "provider_declared_error",
+      code: "MCP_PROVIDER_DECLARED_ERROR",
+      retryable: false,
+      actionOwner: "provider_admin",
+      jsonRpcCode: -32051,
+      providerErrorMessage: "x".repeat(512),
+    })
+    expect(diagnostic.providerErrorMessage).toHaveLength(512)
+  })
+
+  test("keeps free-text provider URLs non-actionable", async () => {
+    const diagnostic = await diagnosticForMcpJsonResponse({
+      responseBody: {
+        jsonrpc: "2.0",
+        id: null,
+        error: { code: -32052, message: "Open https://gateway.example.com/auth/free-text to connect" },
+      },
+    })
+
+    expect(diagnostic).toMatchObject({
+      phase: "PROVIDER_EXECUTION",
+      category: "provider_declared_error",
+      code: "MCP_PROVIDER_DECLARED_ERROR",
+      retryable: false,
+      actionOwner: "provider_admin",
+      jsonRpcCode: -32052,
+      providerErrorMessage: "Open https://gateway.example.com/auth/free-text to connect",
+    })
+    expect(diagnostic.connectUrl).toBeUndefined()
+  })
+
+  test("relays correlated McpError-like provider messages and data", () => {
+    const tracker = new ExternalMcpDiagnosticTracker("req_correlated_provider_declared")
+    tracker.begin("MCP_TOOL_EXECUTION")
+    const providerError = new Error("Quota exceeded for tenant")
+    Object.defineProperty(providerError, "code", { value: -32055, enumerable: true })
+    Object.defineProperty(providerError, "data", { value: { limit: 100 }, enumerable: true })
+
+    const diagnostic = tracker.error(providerError).diagnostic
+    expect(diagnostic).toMatchObject({
+      phase: "PROVIDER_EXECUTION",
+      category: "provider_declared_error",
+      code: "MCP_PROVIDER_DECLARED_ERROR",
+      retryable: false,
+      actionOwner: "provider_admin",
+      jsonRpcCode: -32055,
+      providerErrorMessage: "Quota exceeded for tenant",
+      providerErrorData: '{"limit":100}',
+    })
+    expect(diagnostic.message).toContain("code -32055")
+    expect(diagnostic.message).toContain('Provider-declared message (untrusted): "Quota exceeded for tenant"')
+  })
+
+  test("does not treat REST error bodies as provider-declared JSON-RPC evidence", async () => {
+    const diagnostic = await diagnosticForMcpJsonResponse({
+      responseBody: { error: { code: 500, message: "boom" } },
+    })
+
+    expect(diagnostic).toMatchObject({
+      phase: "MCP_TOOL_EXECUTION",
+      category: "mcp_protocol_failure",
+      code: "MCP_MCP_TOOL_EXECUTION",
+      retryable: false,
+      actionOwner: "provider_admin",
+    })
+    expect(diagnostic.jsonRpcCode).toBeUndefined()
+  })
+
+  test("background MCP endpoint failures do not pollute authoritative tool-call state", async () => {
+    const tracker = new ExternalMcpDiagnosticTracker("req_background_pollution")
+    const diagnosticFetch = createExternalMcpDiagnosticFetch({
+      endpoint: "https://gateway.example.com/mcp",
+      tracker,
+      fetch: async (_url, init) => {
+        if ((init?.method ?? "GET").toUpperCase() === "GET") throw new Error("background SSE failed")
+        return new Response(JSON.stringify({ jsonrpc: "2.0", id: 1, result: {} }), {
+          status: 200,
+          headers: { "content-type": "application/json" },
+        })
+      },
+    })
+    await diagnosticFetch("https://gateway.example.com/mcp", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ jsonrpc: "2.0", id: 1, method: "tools/call", params: {} }),
+    })
+    await expect(diagnosticFetch("https://gateway.example.com/mcp", { method: "GET" })).rejects.toThrow("background SSE failed")
+
+    const diagnostic = tracker.error(new Error("SDK rejected response")).diagnostic
+    expect(diagnostic).toMatchObject({
+      phase: "MCP_TOOL_EXECUTION",
+      category: "mcp_protocol_failure",
+      code: "MCP_MCP_TOOL_EXECUTION",
+      retryable: false,
+      actionOwner: "provider_admin",
+      httpStatus: 200,
+    })
+  })
+
+  test("captured noise does not shadow an informative provider authorization error", () => {
+    const connectUrl = "https://gateway.example.com/auth/x"
+    const tracker = new ExternalMcpDiagnosticTracker("req_shadow_provider_auth")
+    tracker.captureFailure("MCP_TRANSPORT", new Error("background noise"))
+    const error = tracker.error(jsonRpcError(-32001, { connect_url: connectUrl }), "MCP_TOOL_EXECUTION")
+
+    expect(error.diagnostic).toMatchObject({
+      phase: "PROVIDER_AUTHORIZATION",
+      category: "provider_authorization_required",
+      code: "MCP_PROVIDER_AUTH_REQUIRED",
+      retryable: false,
+      actionOwner: "member",
+      connectUrl,
+      jsonRpcCode: -32001,
+    })
+  })
+
+  test("uses an honest fallback message after MCP protocol readiness", () => {
+    const tracker = new ExternalMcpDiagnosticTracker("req_honest_fallback")
+    tracker.passed("MCP_INITIALIZED", "protocol_ready")
+    const diagnostic = tracker.error(new Error("SDK could not parse response")).diagnostic
+
+    expect(diagnostic).toMatchObject({
+      phase: "MCP_INITIALIZED",
+      category: "mcp_protocol_failure",
+      code: "MCP_MCP_INITIALIZED",
+      retryable: false,
+      actionOwner: "provider_admin",
+    })
+    expect(diagnostic.message).toBe("The MCP server answered, but OpenWork could not interpret its response for the current request.")
+  })
+
+  test("classifies unknown correlated JSON-RPC errors as provider-declared while preserving the code", () => {
+    const tracker = new ExternalMcpDiagnosticTracker("req_remote_generic")
+    tracker.begin("MCP_TOOL_EXECUTION")
+    const error = tracker.error(jsonRpcError(-32050, { provider_detail: "must-not-surface" }))
+
+    expect(error.diagnostic).toMatchObject({
+      phase: "PROVIDER_EXECUTION",
+      category: "provider_declared_error",
+      code: "MCP_PROVIDER_DECLARED_ERROR",
+      jsonRpcCode: -32050,
+      providerErrorData: '{"provider_detail":"must-not-surface"}',
+    })
+    expect(error.diagnostic.message).toContain("code -32050")
+  })
+
+  test("classifies structured provider validation errors as correctable tool input", () => {
+    const { result: error } = captureConsoleError(() => {
+      const tracker = new ExternalMcpDiagnosticTracker("req_provider_invalid_params")
+      tracker.passed("MCP_INITIALIZED", "protocol_ready")
+      return tracker.providerToolError({
+        isError: true,
+        content: [{ type: "text", text: "private provider validation detail" }],
+        structuredContent: { category: "invalid_arguments" },
+      })
+    })
+
+    expect(error.diagnostic).toMatchObject({
+      phase: "MCP_TOOL_EXECUTION",
+      category: "mcp_tool_input_invalid",
+      code: "MCP_PROVIDER_INVALID_PARAMS",
+      actionOwner: "openwork",
+      retryable: false,
+      providerErrorMessage: "private provider validation detail",
+    })
+  })
+
+  test("classifies standardized MCP SDK input-validation tool errors with provider text", () => {
+    const { result: error } = captureConsoleError(() => {
+      const tracker = new ExternalMcpDiagnosticTracker("req_sdk_invalid_params")
+      tracker.passed("MCP_INITIALIZED", "protocol_ready")
+      return tracker.providerToolError({
+        isError: true,
+        content: [{
+          type: "text",
+          text: "Input validation error: Invalid arguments for tool lookup_incident: private provider detail",
+        }],
+      })
+    })
+
+    expect(error.diagnostic).toMatchObject({
+      phase: "MCP_TOOL_EXECUTION",
+      category: "mcp_tool_input_invalid",
+      code: "MCP_PROVIDER_INVALID_PARAMS",
+      actionOwner: "openwork",
+      retryable: false,
+      providerErrorMessage: "Input validation error: Invalid arguments for tool lookup_incident: private provider detail",
+    })
+  })
+
+  test("derives allowlisted provider evidence from ServiceNow-style text JSON", () => {
+    const providerText = '{"status":403,"error":"insufficient_acl","requestId":"TXN-abc-123"}'
+    const { result: error } = captureConsoleError(() => {
+      const tracker = new ExternalMcpDiagnosticTracker("req_servicenow_text")
+      tracker.passed("MCP_INITIALIZED", "protocol_ready")
+      return tracker.providerToolError({
+        isError: true,
+        content: [{ type: "text", text: providerText }],
+      })
+    })
+
+    expect(error.diagnostic).toMatchObject({
+      phase: "PROVIDER_AUTHORIZATION",
+      category: "provider_policy_denied",
+      code: "MCP_PROVIDER_HTTP_403",
+      providerStatus: 403,
+      providerCode: "insufficient_acl",
+      providerRequestId: "TXN-abc-123",
+      highestPassed: "protocol_ready",
+      providerErrorMessage: providerText,
+    })
+    expect(error.diagnostic.payloadBytes ?? 0).toBeGreaterThan(0)
+    expect(error.diagnostic.message).toContain("provider status 403")
+    expect(error.diagnostic.message).toContain("code insufficient_acl")
+    expect(error.diagnostic.message).not.toContain(providerText)
+  })
+
+  test("logs Redis-style provider text evidence while relaying the bounded excerpt", () => {
+    const providerText = "All slots are not covered by nodes. 0 of 16384 covered."
+    const { result: error, errors } = captureConsoleError(() => {
+      const tracker = new ExternalMcpDiagnosticTracker("req_redis_text")
+      tracker.passed("MCP_INITIALIZED", "protocol_ready")
+      return tracker.providerToolError({
+        isError: true,
+        content: [{ type: "text", text: providerText }],
+      })
+    })
+
+    expect(error.diagnostic).toMatchObject({
+      phase: "PROVIDER_EXECUTION",
+      category: "provider_tool_error",
+      code: "MCP_PROVIDER_TOOL_ERROR",
+      providerErrorMessage: providerText,
+    })
+    expect(error.diagnostic.payloadBytes ?? 0).toBeGreaterThan(0)
+    expect(error.diagnostic.message).not.toContain(providerText)
+
+    const loggedText = serializedConsoleErrors(errors)
+    expect(loggedText).toContain("external_mcp_provider_tool_evidence")
+    expect(loggedText).toContain("req_redis_text")
+    expect(loggedText).toContain(providerText)
+  })
+
+  test("does not classify mid-sentence provider status-like numbers", () => {
+    const { result: error } = captureConsoleError(() => {
+      const tracker = new ExternalMcpDiagnosticTracker("req_mid_sentence_status")
+      tracker.passed("MCP_INITIALIZED", "protocol_ready")
+      return tracker.providerToolError({
+        isError: true,
+        content: [{ type: "text", text: "we found 403 records" }],
+      })
+    })
+
+    expect(error.diagnostic).toMatchObject({
+      phase: "PROVIDER_EXECUTION",
+      category: "provider_tool_error",
+      code: "MCP_PROVIDER_TOOL_ERROR",
+      providerErrorMessage: "we found 403 records",
+    })
+    expect(error.diagnostic.providerStatus).toBeUndefined()
+  })
+
+  test("keeps empty provider tool content generic with zero payload bytes", () => {
+    const { result: error } = captureConsoleError(() => {
+      const tracker = new ExternalMcpDiagnosticTracker("req_empty_tool_content")
+      tracker.passed("MCP_INITIALIZED", "protocol_ready")
+      return tracker.providerToolError({
+        isError: true,
+        content: [],
+      })
+    })
+
+    expect(error.diagnostic).toMatchObject({
+      phase: "PROVIDER_EXECUTION",
+      category: "provider_tool_error",
+      code: "MCP_PROVIDER_TOOL_ERROR",
+      payloadBytes: 0,
+    })
   })
 
   test("typed OAuth token errors override generic HTTP 400 classification", async () => {
@@ -554,6 +1134,17 @@ describe("external MCP diagnostics", () => {
     expect(html).not.toContain("Bearer hidden")
   })
 
+  test("successful callbacks stay in the browser without opening the desktop app", () => {
+    const html = connectCallbackPage({ ok: true, name: "Enterprise MCP <test>" })
+
+    expect(html).toContain("You're connected")
+    expect(html).toContain("Enterprise MCP &lt;test&gt; is connected to OpenWork.")
+    expect(html).toContain("window.close()")
+    expect(html).toContain("Close window")
+    expect(html).not.toContain("openwork://")
+    expect(html).not.toContain("Open OpenWork")
+  })
+
   test("exhausts paginated tool catalogs exactly once", async () => {
     const { collectExternalMcpToolPages } = await import("../src/capability-sources/external-mcp-client.js")
     const diagnostic = new ExternalMcpDiagnosticTracker("req_pages")
@@ -700,6 +1291,26 @@ describe("external MCP diagnostics", () => {
     expect(totals).toHaveLength(2)
     expect(totals[0]).toBeGreaterThan(totals[1] ?? 0)
     expect(resetFlags).toEqual([false, false])
+  })
+
+  test("allows tool execution to use a longer bounded request timeout", async () => {
+    const {
+      createExternalMcpLifecycleDeadline,
+      runExternalMcpRequestWithinDeadline,
+    } = await import("../src/capability-sources/external-mcp-client.js")
+    const diagnostic = new ExternalMcpDiagnosticTracker("req_tool_timeout")
+    const options = await runExternalMcpRequestWithinDeadline({
+      diagnostic,
+      deadline: createExternalMcpLifecycleDeadline(150_000),
+      phase: "MCP_TOOL_EXECUTION",
+      requestTimeoutMs: 120_000,
+      operation: async (requestOptions) => requestOptions,
+    })
+
+    expect(options.timeout).toBe(120_000)
+    expect(options.maxTotalTimeout).toBeGreaterThanOrEqual(149_000)
+    expect(options.maxTotalTimeout).toBeLessThanOrEqual(150_000)
+    expect(options.resetTimeoutOnProgress).toBe(false)
   })
 
   test("fails a hung catalog page at the absolute lifecycle deadline", async () => {

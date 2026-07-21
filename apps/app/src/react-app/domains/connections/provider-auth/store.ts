@@ -68,15 +68,21 @@ import {
   isCloudProviderOutOfSync,
   resolveCloudProviderCredentials,
 } from "./cloud-provider-config";
-import { refreshDesktopCloudSync } from "../../../../app/cloud/desktop-cloud-sync";
 import { dispatchNewProviders } from "../../../../app/lib/provider-events";
+import { updateManagedDisabledProviders } from "../managed-engine-config";
 import {
   isDesktopProviderBlocked,
   type DesktopAppRestrictionChecker,
 } from "../../../../app/cloud/desktop-app-restrictions";
 
 type ProviderReturnFocusTarget = "none" | "composer";
-type CloudProviderSyncReason = "sign_in" | "app_launch" | "interval" | "settings_cloud_opened";
+type CloudProviderSyncReason =
+  | "sign_in"
+  | "app_launch"
+  | "app_resume"
+  | "model_picker_open"
+  | "new_chat"
+  | "settings_cloud_opened";
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
@@ -150,6 +156,7 @@ type CreateProviderAuthStoreOptions = {
   disabledProviders: () => string[];
   checkDesktopAppRestriction: DesktopAppRestrictionChecker;
   selectedWorkspaceDisplay: () => WorkspaceDisplay;
+  providerBaseUrl: () => string;
   selectedWorkspaceRoot: () => string;
   runtimeWorkspaceId: () => string | null;
   ensureRuntimeWorkspaceId?: () => Promise<string | null | undefined>;
@@ -431,11 +438,6 @@ export function createProviderAuthStore(options: CreateProviderAuthStoreOptions)
       );
     }
     setStateField("importedCloudProviders", nextProviders);
-    const target = await resolveOpenworkConfigTarget("write");
-    void refreshDesktopCloudSync({
-      openworkClient: target.openworkClient,
-      workspaceId: target.openworkWorkspaceId,
-    }).catch(() => null);
   };
 
   const readProjectConfigFile = async () => {
@@ -554,12 +556,24 @@ export function createProviderAuthStore(options: CreateProviderAuthStoreOptions)
     }
 
     const c = options.client();
-    if (!c) {
+    const openworkSnapshot = options.openworkServer.getSnapshot();
+    const workspaceId = options.runtimeWorkspaceId();
+    const workspaceType = options.selectedWorkspaceDisplay().workspaceType;
+    const canUseManagedRuntime = Boolean(openworkSnapshot.openworkServerClient && workspaceId?.trim() && workspaceType === "local");
+    if (!c && !canUseManagedRuntime) {
       throw new Error(t("providers.not_connected"));
     }
-    const config = unwrap(await c.config.get());
+    const config = c ? unwrap(await c.config.get()) : {};
     const next = fallbackUpdate(config);
-    await c.config.update({ config: next });
+    await updateManagedDisabledProviders({
+      opencodeClient: c,
+      openworkClient: openworkSnapshot.openworkServerClient,
+      workspaceId,
+      workspaceType,
+      disabledProviders: next.disabled_providers,
+      currentConfig: config,
+      removeFallbackKeyWhenEmpty: true,
+    });
     return true;
   };
 
@@ -1139,7 +1153,7 @@ export function createProviderAuthStore(options: CreateProviderAuthStoreOptions)
     }
   }
 
-  async function refreshProviders(optionsArg?: { dispose?: boolean }) {
+  async function refreshProviders(optionsArg?: { dispose?: boolean; force?: boolean }) {
     const c = options.client();
     if (!c) return null;
 
@@ -1208,8 +1222,9 @@ export function createProviderAuthStore(options: CreateProviderAuthStoreOptions)
       const updated = filterProviderList(
         await ensureProviderListQuery(getReactQueryClient(), {
           client: activeClient,
+          baseUrl: options.providerBaseUrl(),
           directory: options.selectedWorkspaceRoot(),
-          force: Boolean(optionsArg?.dispose),
+          force: Boolean(optionsArg?.dispose || optionsArg?.force),
         }),
         disabledProviders,
       );

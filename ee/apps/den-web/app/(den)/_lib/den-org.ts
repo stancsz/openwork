@@ -45,6 +45,7 @@ export type DenOrgTeam = {
   createdAt: string | null;
   updatedAt: string | null;
   memberIds: string[];
+  managedByScim: boolean;
 };
 
 export type DenCurrentMemberTeam = {
@@ -109,6 +110,7 @@ export type DenOrgScimConnection = {
   id: string;
   providerId: string;
   organizationId: string;
+  groupMappingMode: "metadata_only" | "create_teams";
   createdAt: string | null;
   updatedAt: string | null;
 };
@@ -489,6 +491,10 @@ export function getOrgSettingsRoute(orgSlug?: string | null): string {
   return `${getOrgDashboardRoute(orgSlug)}/org-settings`;
 }
 
+export function getDiagnosticsRoute(orgSlug?: string | null): string {
+  return `${getOrgDashboardRoute(orgSlug)}/diagnostics`;
+}
+
 export function getBrandAppearanceRoute(orgSlug?: string | null): string {
   return `${getOrgDashboardRoute(orgSlug)}/brand-appearance`;
 }
@@ -515,6 +521,10 @@ export function getPluginRoute(orgSlug: string | null | undefined, pluginId: str
 
 export function getNewPluginRoute(orgSlug?: string | null): string {
   return `${getPluginsRoute(orgSlug)}/new`;
+}
+
+export function getImportPluginRoute(orgSlug?: string | null): string {
+  return `${getPluginsRoute(orgSlug)}/import`;
 }
 
 export function getMarketplacesRoute(orgSlug?: string | null): string {
@@ -727,6 +737,7 @@ export function parseOrgContextPayload(payload: unknown): DenOrgContext | null {
             createdAt: asIsoString(entry.createdAt),
             updatedAt: asIsoString(entry.updatedAt),
             memberIds,
+            managedByScim: asBoolean(entry.managedByScim),
           } satisfies DenOrgTeam;
         })
         .filter((entry): entry is DenOrgTeam => entry !== null)
@@ -934,6 +945,7 @@ export function parseOrgApiKeysPayload(payload: unknown): DenOrgApiKey[] {
 
 export function parseOrgScimPayload(payload: unknown): {
   baseUrl: string | null;
+  ssoReady: boolean;
   connection: DenOrgScimConnection | null;
   health: DenOrgScimHealth;
   scimToken: string | null;
@@ -941,6 +953,7 @@ export function parseOrgScimPayload(payload: unknown): {
   if (!isRecord(payload)) {
     return {
       baseUrl: null,
+      ssoReady: false,
       connection: null,
       health: {
         unresolvedFailureCount: 0,
@@ -960,6 +973,9 @@ export function parseOrgScimPayload(payload: unknown): {
         const id = asString(rawConnection.id);
         const providerId = asString(rawConnection.providerId);
         const organizationId = asString(rawConnection.organizationId);
+        const groupMappingMode = rawConnection.groupMappingMode === "create_teams"
+          ? "create_teams"
+          : "metadata_only";
 
         if (!id || !providerId || !organizationId) {
           return null;
@@ -969,6 +985,7 @@ export function parseOrgScimPayload(payload: unknown): {
           id,
           providerId,
           organizationId,
+          groupMappingMode,
           createdAt: asIsoString(rawConnection.createdAt),
           updatedAt: asIsoString(rawConnection.updatedAt),
         } satisfies DenOrgScimConnection;
@@ -989,6 +1006,7 @@ export function parseOrgScimPayload(payload: unknown): {
 
   return {
     baseUrl: asString(payload.baseUrl),
+    ssoReady: payload.ssoReady === true,
     connection,
     health,
     scimToken: asString(payload.scimToken),

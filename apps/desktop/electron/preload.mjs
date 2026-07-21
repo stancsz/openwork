@@ -92,6 +92,14 @@ contextBridge.exposeInMainWorld("__OPENWORK_ELECTRON__", {
       return ipcRenderer.invoke("openwork:desktop", "__evalRelaunch");
     },
   },
+  nuke: {
+    preview(options) {
+      return ipcRenderer.invoke("openwork:desktop", "nukeOpenworkAndOpencodeConfigPreview", options);
+    },
+    execute(options) {
+      return ipcRenderer.invoke("openwork:desktop", "nukeOpenworkAndOpencodeConfigAndExit", options);
+    },
+  },
   updater: {
     getChannel() {
       return ipcRenderer.invoke("openwork:updater:getChannel");
@@ -99,8 +107,8 @@ contextBridge.exposeInMainWorld("__OPENWORK_ELECTRON__", {
     setChannel(channel) {
       return ipcRenderer.invoke("openwork:updater:setChannel", channel);
     },
-    check(channel) {
-      return ipcRenderer.invoke("openwork:updater:check", channel);
+    check(channel, targetVersion) {
+      return ipcRenderer.invoke("openwork:updater:check", channel, targetVersion);
     },
     download() {
       return ipcRenderer.invoke("openwork:updater:download");
@@ -173,10 +181,6 @@ contextBridge.exposeInMainWorld("__OPENWORK_ELECTRON__", {
     initialDeepLinks: [],
     platform: normalizePlatform(process.platform),
     version: process.versions.electron,
-    // Mirror the main-process workspace-recovery flag so the renderer's
-    // first-run detection (which reads localStorage, not the desktop state
-    // file) stays consistent when recovery is deliberately disabled.
-    disableWorkspaceRecovery: process.env.OPENWORK_DESKTOP_DISABLE_WORKSPACE_RECOVERY === "1",
   },
 });
 

@@ -2,6 +2,7 @@ import type { EnterpriseMcpOperationPhase, EnterpriseMcpRequestPhase } from "./c
 
 export type EnterpriseMcpErrorCode =
   | "MCP_CONFIGURATION_FAILED"
+  | "MCP_REQUIREMENTS_DISCOVERY_FAILED"
   | "MCP_CONNECTION_HANDSHAKE_FAILED"
   | "MCP_AUTHORIZATION_CALLBACK_FAILED"
   | "MCP_PROTOCOL_INITIALIZE_FAILED"
@@ -11,6 +12,7 @@ export type EnterpriseMcpErrorCode =
 
 const errorCodeByPhase: Record<EnterpriseMcpOperationPhase, EnterpriseMcpErrorCode> = {
   configuration: "MCP_CONFIGURATION_FAILED",
+  "requirements-discovery": "MCP_REQUIREMENTS_DISCOVERY_FAILED",
   "connection-handshake": "MCP_CONNECTION_HANDSHAKE_FAILED",
   "authorization-callback": "MCP_AUTHORIZATION_CALLBACK_FAILED",
   "protocol-initialize": "MCP_PROTOCOL_INITIALIZE_FAILED",
@@ -21,6 +23,7 @@ const errorCodeByPhase: Record<EnterpriseMcpOperationPhase, EnterpriseMcpErrorCo
 
 const phaseLabel: Record<EnterpriseMcpOperationPhase, string> = {
   configuration: "connection configuration",
+  "requirements-discovery": "MCP connection requirements discovery",
   "connection-handshake": "MCP connection handshake",
   "authorization-callback": "OAuth authorization callback",
   "protocol-initialize": "MCP protocol initialization",
@@ -68,6 +71,9 @@ export type EnterpriseMcpOAuthContractErrorCode =
   | "MCP_OAUTH_AUTHORIZATION_CLIENT_CHANGED"
   | "MCP_OAUTH_CLIENT_EXPIRED"
   | "MCP_OAUTH_CREDENTIAL_EXPIRED"
+  | "MCP_OAUTH_CREDENTIAL_CHANGED"
+  | "MCP_OAUTH_CONFIGURATION_REQUIRED"
+  | "MCP_OAUTH_ISSUER_MISMATCH"
   | "MCP_OAUTH_PERSISTENCE_INVALID"
   | "MCP_LIFECYCLE_DEADLINE"
 
@@ -93,16 +99,28 @@ export class EnterpriseMcpToolResultError extends Error {
       && typeof result.structuredContent === "object" && result.structuredContent !== null
       ? result.structuredContent
       : null
-    if (!structuredContent) return
-    const providerStatus = "providerStatus" in structuredContent && typeof structuredContent.providerStatus === "number"
+    const content = typeof result === "object" && result !== null && "content" in result && Array.isArray(result.content)
+      ? result.content
+      : []
+    const hasStandardInputValidationError = content.some((item) => {
+      if (typeof item !== "object" || item === null || !("type" in item) || item.type !== "text" || !("text" in item) || typeof item.text !== "string") {
+        return false
+      }
+      return /^Input validation error:\s*Invalid arguments for tool\b/i.test(item.text)
+        || /^Invalid (?:tool )?(?:arguments|params)\b/i.test(item.text)
+    })
+    const providerStatus = structuredContent && "providerStatus" in structuredContent && typeof structuredContent.providerStatus === "number"
       ? structuredContent.providerStatus
       : undefined
-    const category = "category" in structuredContent && typeof structuredContent.category === "string"
+    const category = structuredContent && "category" in structuredContent && typeof structuredContent.category === "string"
       ? structuredContent.category
-      : undefined
-    const requestId = "requestId" in structuredContent && typeof structuredContent.requestId === "string"
+      : hasStandardInputValidationError
+        ? "invalid_arguments"
+        : undefined
+    const requestId = structuredContent && "requestId" in structuredContent && typeof structuredContent.requestId === "string"
       ? structuredContent.requestId
       : undefined
+    if (providerStatus === undefined && category === undefined && requestId === undefined) return
     this.providerSignal = {
       ...(providerStatus !== undefined ? { providerStatus } : {}),
       ...(category !== undefined ? { category } : {}),
