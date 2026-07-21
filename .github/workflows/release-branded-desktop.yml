@@ -97,6 +97,9 @@ jobs:
         run: node scripts/brandkit/apply.mjs
 
       - name: Build desktop bundle
+        env:
+          BRANDKIT_LANG: ${{ matrix.lang }}
+          BRANDKIT_BRAND: ${{ matrix.brand }}
         run: pnpm --filter @openwork/desktop run build:electron
 
       - name: Package Windows installer
