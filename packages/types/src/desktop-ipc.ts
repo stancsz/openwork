@@ -292,6 +292,27 @@ export type CacheResetResult = {
   errors: string[];
 };
 
+export type NukeManifestPreview = {
+  deletePaths: string[];
+  preserveBootstrapPath: string | null;
+  partitions: string[];
+};
+
+export type NukeReceiptError = {
+  path: string;
+  message: string;
+  code?: string;
+};
+
+export type NukeReceipt = {
+  deleted: string[];
+  pendingRetry: string[];
+  errors: NukeReceiptError[];
+  preservedBootstrap: boolean;
+  relaunchMode: "cleanup_worker" | "direct";
+  workerScheduled: boolean;
+};
+
 export type DesktopFetchInit = {
   method?: string;
   headers?: Record<string, string>;
@@ -457,7 +478,8 @@ export type DesktopCommandMap = {
     args: [rawUrl: string];
     result: { ok: true; config: DesktopBootstrapConfig } | ConnectLinkVerifyFailure;
   };
-  nukeOpenworkAndOpencodeConfigAndExit: { args: []; result: unknown };
+  nukeOpenworkAndOpencodeConfigPreview: { args: []; result: NukeManifestPreview };
+  nukeOpenworkAndOpencodeConfigAndExit: { args: []; result: NukeReceipt };
 
   // Sandbox
   sandboxDoctor: { args: []; result: SandboxDoctorResult };
