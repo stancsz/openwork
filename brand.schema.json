@@ -1,12 +1,21 @@
 {
   "$schema": "http://json-schema.org/draft-07/schema#",
   "title": "OpenWork brand kit config",
-  "description": "Single source of truth a distributor edits to rebrand OpenWork. Consumed by scripts/brandkit/apply.mjs at build time. Nothing here is committed into upstream-tracked source files.",
+  "description": "Per-brand source of truth for the OpenWork brand kit. Put one brand.json and one logo.svg under brands/<id>/. Shared defaults are merged from brands/_defaults.json.",
   "type": "object",
   "additionalProperties": false,
-  "required": ["brand"],
+  "required": ["id", "brand"],
   "properties": {
     "$schema": { "type": "string" },
+    "id": {
+      "type": "string",
+      "pattern": "^[a-z][a-z0-9-]*$",
+      "description": "Stable lowercase brand id. CI discovers this from brands/<id>/brand.json."
+    },
+    "extends": {
+      "type": "string",
+      "description": "Optional path to another JSON config. The brand file is merged on top, useful for one-off variants."
+    },
     "features": {
       "type": "object",
       "additionalProperties": false,
@@ -25,7 +34,7 @@
         "assets": {
           "type": "boolean",
           "default": true,
-          "description": "Overwrite logo/favicon/desktop-icon files with the ones in brand.assets."
+          "description": "Generate the web and desktop asset set from brand.image."
         },
         "desktopIdentity": {
           "type": "boolean",
@@ -99,9 +108,13 @@
             "green", "grass", "lime", "mint", "sky"
           ]
         },
+        "image": {
+          "type": "string",
+          "description": "Path to the one canonical logo/icon image, relative to this brand.json. SVG and common raster images are supported; build-time derivatives are generated automatically."
+        },
         "assets": {
           "type": "object",
-          "description": "Repo-relative paths to the distributor's brand assets. Missing files are skipped with a warning so a first run still succeeds.",
+          "description": "Legacy per-file asset paths. New brand definitions should use image instead.",
           "additionalProperties": false,
           "properties": {
             "mark": { "type": "string", "description": "Square glyph, overwrites apps/app/public/openwork-mark.svg" },

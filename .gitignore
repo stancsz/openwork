@@ -62,6 +62,7 @@ vendor/opencode/
 .opencode/agents/openwork.md
 .opencode/openwork.json
 opencode.jsonc
+.brandkit/
 .vercel
 .env*.local
 .claude/*

@@ -1,15 +1,15 @@
-name: Release MiniWork + ClinicWork
+name: Release branded desktop apps
 
-# Builds the branded desktop installers — MiniWork AND ClinicWork, en + zh
-# editions each — and publishes them all to one GitHub Release on this repo.
+# Builds every discovered brand, in en + zh editions, and publishes the
+# installers to one GitHub Release on this repo. Add a brand by adding
+# brands/<id>/brand.json and its logo image; this workflow needs no edit.
 #
-#   macOS runner   -> electron-builder --mac dmg   -> miniwork[-zh]-mac-*.dmg
-#   Windows runner -> electron-builder --win nsis  -> miniwork[-zh]-win-*.exe
+#   macOS runner   -> electron-builder --mac dmg   -> <brand>[-zh]-mac-*.dmg
+#   Windows runner -> electron-builder --win nsis  -> <brand>[-zh]-win-*.exe
 #
-# The MiniWork branding lives only in the brand kit (brand.config.json +
-# scripts/brandkit). This workflow runs `apply.mjs` (with BRANDKIT_LANG for the
-# Chinese edition) to layer it onto the upstream working tree at build time, so
-# the branch stays a clean OpenWork tree.
+# Brand definitions live only in brands/<id>/ and scripts/brandkit. Each matrix
+# job applies one selected brand to a clean checkout at build time, so the
+# branch stays a clean OpenWork tree.
 #
 # Trigger by pushing a `miniwork-v*` tag (e.g. miniwork-v0.17.20) or via the
 # Actions tab. NOTE: we deliberately do NOT trigger on `v*` — the upstream
@@ -23,20 +23,44 @@ on:
         description: "Release tag to create/publish (e.g. miniwork-v0.17.20)"
         required: true
         type: string
+  pull_request:
+    paths:
+      - ".github/workflows/release-branded-desktop.yml"
+      - "brand.schema.json"
+      - "brand/**"
+      - "brands/**"
+      - "scripts/brandkit/**"
+      - "apps/**"
+      - "packages/**"
+      - "package.json"
+      - "pnpm-lock.yaml"
   push:
     tags:
       - "miniwork-v*"
 
 permissions:
-  contents: write
+  contents: read
 
 jobs:
+  discover:
+    runs-on: ubuntu-latest
+    outputs:
+      brands: ${{ steps.brands.outputs.brands }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Discover brands
+        id: brands
+        run: echo "brands=$(node scripts/brandkit/list.mjs --json)" >> "$GITHUB_OUTPUT"
+
   build:
+    needs: discover
     strategy:
       fail-fast: false
       matrix:
         platform: [mac, win]
-        brand: [miniwork, clinicwork]
+        brand: ${{ fromJSON(needs.discover.outputs.brands) }}
         lang: [en, zh]
         include:
           - platform: mac
@@ -69,10 +93,13 @@ jobs:
       - name: Apply ${{ matrix.brand }} brand kit (${{ matrix.lang }})
         env:
           BRANDKIT_LANG: ${{ matrix.lang }}
-          BRANDKIT_CONFIG: ${{ matrix.brand == 'clinicwork' && 'brand.clinicwork.json' || 'brand.config.json' }}
+          BRANDKIT_BRAND: ${{ matrix.brand }}
         run: node scripts/brandkit/apply.mjs
 
       - name: Build desktop bundle
+        env:
+          BRANDKIT_LANG: ${{ matrix.lang }}
+          BRANDKIT_BRAND: ${{ matrix.brand }}
         run: pnpm --filter @openwork/desktop run build:electron
 
       - name: Package Windows installer
@@ -89,10 +116,13 @@ jobs:
       # have an Apple account.
       - name: Package + ad-hoc sign macOS app
         if: matrix.platform == 'mac'
+        env:
+          BRANDKIT_LANG: ${{ matrix.lang }}
+          BRANDKIT_BRAND: ${{ matrix.brand }}
         run: |
           set -euo pipefail
           cd apps/desktop
-          APP_NAME=$([ "${{ matrix.brand }}" = "clinicwork" ] && echo ClinicWork || echo MiniWork)
+          APP_NAME=$(node ../../scripts/brandkit/metadata.mjs productName)
 
           # 1) Build the .app only (afterPack lays down the sidecars here).
           pnpm exec electron-builder --config electron-builder.yml --mac dir --publish never
@@ -137,8 +167,11 @@ jobs:
             apps/desktop/dist-electron/${{ matrix.brand }}-*.blockmap
 
   release:
+    if: github.event_name != 'pull_request'
     needs: build
     runs-on: ubuntu-latest
+    permissions:
+      contents: write
     steps:
       - name: Download installers
         uses: actions/download-artifact@v4
@@ -153,18 +186,18 @@ jobs:
           draft: false
           fail_on_unmatched_files: true
           body: |
-            MiniWork + ClinicWork desktop — **unsigned** builds (SmartScreen / Gatekeeper warnings expected).
-            `miniwork-*` is the general edition; `clinicwork-*` is the clinic edition. `-zh-` artifacts are the hard-locked Chinese editions (中文版).
+            Branded desktop installers — **unsigned** builds (SmartScreen / Gatekeeper warnings expected).
+            Each artifact prefix identifies the brand. `-zh-` artifacts are the hard-locked Chinese editions (中文版).
 
-            ### Windows — `{miniwork|clinicwork}[-zh]-win-x64-*.exe`
+            ### Windows — `{brand}[-zh]-win-x64-*.exe`
             SmartScreen may warn ("unknown publisher"). Click **More info → Run anyway**, then install.
 
-            ### macOS (Apple Silicon) — `{miniwork|clinicwork}[-zh]-mac-arm64-*.dmg`
+            ### macOS (Apple Silicon) — `{brand}[-zh]-mac-arm64-*.dmg`
             1. Open the `.dmg` and drag the app into **Applications**.
             2. **Right-click** the app in Applications → **Open** → **Open**.
 
             If macOS still blocks it:
             ```
-            xattr -dr com.apple.quarantine "/Applications/MiniWork.app"   # or ClinicWork.app
+            xattr -dr com.apple.quarantine "/Applications/<BrandName>.app"
             ```
           files: dist/**/*

@@ -1,34 +1,11 @@
 {
-  "$schema": "./brand.schema.json",
-  "features": {
-    "brandName": true,
-    "accentColor": true,
-    "assets": true,
-    "desktopIdentity": true,
-    "providers": true,
-    "welcomeOverride": true,
-    "cloudHide": true,
-    "language": true,
-    "trim": true
-  },
-  "language": {
-    "default": "en"
-  },
+  "$schema": "../../brand.schema.json",
+  "id": "miniwork",
   "brand": {
     "name": "MiniWork",
     "shortName": "Mini",
     "accentColor": "iris",
-    "assets": {
-      "mark": "brand/mark.svg",
-      "logo": "brand/logo.svg",
-      "logoSquare": "brand/logo-square.svg",
-      "favicon32": "brand/favicon-32x32.png",
-      "favicon16": "brand/favicon-16x16.png",
-      "appleTouchIcon": "brand/apple-touch-icon.png",
-      "desktopIconPng": "brand/icon.png",
-      "desktopIconIco": "brand/icon.ico",
-      "desktopIconIcns": "brand/icon.icns"
-    }
+    "image": "logo.svg"
   },
   "desktop": {
     "appId": "com.miniwork.app",
@@ -37,34 +14,6 @@
       "owner": "stancsz",
       "repo": "openwork"
     }
-  },
-  "providers": {
-    "allowed": [
-      "openrouter"
-    ],
-    "models": [
-      "anthropic/",
-      "openai/",
-      "minimax/",
-      "z-ai/"
-    ],
-    "default": {
-      "providerID": "openrouter",
-      "modelID": "anthropic/claude-sonnet-4.5",
-      "displayName": "Auto",
-      "baseURL": "https://api.badlandslabs.com/v1"
-    },
-    "modelsCatalogUrl": "https://api.badlandslabs.com/",
-    "keyCard": {
-      "label": "Badlands Labs",
-      "keysUrl": null,
-      "validateUrl": "https://api.badlandslabs.com/v1/key",
-      "keyPrefix": null
-    }
-  },
-  "cloud": {
-    "hide": true,
-    "requireSignin": false
   },
   "welcome": {
     "showSignIn": false,
