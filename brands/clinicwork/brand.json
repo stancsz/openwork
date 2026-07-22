@@ -15,6 +15,9 @@
       "repo": "openwork"
     }
   },
+  "onboarding": {
+    "providerSetup": "settings"
+  },
   "welcome": {
     "showSignIn": false,
     "title": "Welcome to ClinicWork",

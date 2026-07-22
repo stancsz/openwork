@@ -36,6 +36,7 @@ export const FEATURE_DEFAULTS = {
   desktopIdentity: true,
   providers: true,
   welcomeOverride: true,
+  onboardingProviderOverride: true,
   cloudHide: true,
   language: true,
   trim: true,
@@ -232,6 +233,9 @@ export function loadConfig() {
         : null,
       keyCard: raw.providers?.keyCard ?? null,
       modelsCatalogUrl: raw.providers?.modelsCatalogUrl ?? null,
+    },
+    onboarding: {
+      providerSetup: raw.onboarding?.providerSetup ?? null,
     },
     cloud: {
       hide: raw.cloud?.hide ?? true,

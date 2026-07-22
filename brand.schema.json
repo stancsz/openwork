@@ -51,6 +51,11 @@
           "default": true,
           "description": "Generate the brand-owned welcome page + vite.brandkit.config.mts reroute."
         },
+        "onboardingProviderOverride": {
+          "type": "boolean",
+          "default": true,
+          "description": "Generate a brand-owned provider onboarding step."
+        },
         "cloudHide": {
           "type": "boolean",
           "default": true,
@@ -236,6 +241,18 @@
         "requireSignin": {
           "type": "boolean",
           "description": "Whether to force account sign-in. Brand-kit default is false."
+        }
+      }
+    },
+    "onboarding": {
+      "type": "object",
+      "additionalProperties": false,
+      "description": "Optional post-workspace onboarding copy and behavior.",
+      "properties": {
+        "providerSetup": {
+          "type": "string",
+          "enum": ["settings"],
+          "description": "Replace provider-choice onboarding with instructions to enter the API key in Settings → AI Providers."
         }
       }
     },
